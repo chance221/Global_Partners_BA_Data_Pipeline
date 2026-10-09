@@ -13,15 +13,18 @@ Because the data will sit in a SQL server bucket versioning is unecessary for th
 The Buckets are set up with basic SSE-S3 managed key encryption while SSE-KMS is preferred in production corporate environments to maintain explicit audits. Because this is a basic project I wanted to eliminate the unecessary AWS KMS API request cost for this daily batch job. S3 Data Tables instead of S3 Buckets were considered but because these are meant for high throughput for streaming operations, and since this daily data will grow over time and most likely rell require it to be archived, and can be coupled with Glue Table Optomizer to automatically compact and retain snapshots relatively easily. 
 
 </br>
+
 ## AWS RDS MSSQL Server
 Conncection is made by generatinga connection string that is built using the secret returned from the AWS RDS Secrets object directly. The certificate for RDS is automatically accepted for dev purposes but in a live production environment should have a downloaded root certificate and placed in a java trust store. 
 
 </br>
+
 ## Medallion Architecture Using SCD1
 As there is no business need to maintain old records using SCD1 is the best choice to keep storage cost down as well as the most performant choice when implementing an OLAP layer. Because we are not adding unecessary columns, aggregations are much faster, queries stay lean and scan fewer rows comparatively quickly. The only issue is that the data will only reflect the current state meaning if a client or product moved locations only the most recent record entry for that sale will be reflected, but considering we are not focusing on sales data trends that are not heavily reliant on product or customer locations, the trade-off is considered acceptable for this task.
 
 
 </br>
+
 ## Iceberg Vs Strictly Parquet for Silver and Golc Layers
 After the database tables are ingested into  flat parquet files AWS Iceberg is implemented in Silver and Gold Layers for multiple reasons. Iceberg uses a table format that tracks entire collections of parquet files using metadata, so when performing SCD 1 updates, data can be safely overwritten using standard SQL UPDATE and MERGE commands without worry of destroying data because of a crashed run. Because it uses metadata to maintain where parquet files are located, merge operations can be 20-50% less for write workloads, and S3 request cost can be reduced by up to 90% due to the elimination of object scans by using Hidden Partitioning and column level statistics. By maintaining metadata if a file ddoesn't contain the data you're looking for Iceberg would skip it entirely.
 
