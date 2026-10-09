@@ -1,0 +1,18 @@
+NotesAndBrainDump.ipynb
+
+.env*
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+spark-warehouse/
+metastore_db/
+derby.log
+.vscode/
+
+
+# build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
