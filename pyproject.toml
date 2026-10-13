@@ -8,8 +8,9 @@ version = "0.1.0"
 description = "Medallion pipeline: RDS SQL Server to S3 via Spark, local and AWS Glue"
 readme = "Readme.md"
 
-# Glue 5.0 runs Python 3.11 and Glue 4.0 runs 3.10. Keep this permissive so the
-# wheel installs on Glue even though local development is on 3.13.
+# Glue 6.0 runs Python 3.13, matching local development. Kept permissive so the
+# wheel still installs on older Glue versions (5.1/5.0 run Python 3.11) if we need
+# to fall back.
 requires-python = ">=3.9"
 
 # Intentionally empty. AWS Glue already provides pyspark and boto3; declaring
@@ -18,12 +19,16 @@ dependencies = []
 
 [project.optional-dependencies]
 # Local development only -- never installed on Glue.
-# pyspark is pinned to the exact version in the Glue 5.0 runtime so local runs
-# and Glue runs exercise the same Spark. Bump both together when changing Glue version.
+# pyspark is pinned to the exact version in the Glue 6.0 runtime so local runs
+# and Glue runs exercise the same Spark. Glue 6.0 = Spark 4.1.1 / Hadoop 3.4.2 /
+# Scala 2.13.17 / Python 3.13 / Java 17 / Iceberg 1.11.0, AWS SDK for Java v2 only.
+# Bump this, hadoop-aws, and the s3a credentials provider together.
 local = [
-    "pyspark==3.5.4",
+    "pyspark==4.1.1",
     "boto3>=1.34",
     "python-dotenv>=1.0",
+    # Glue 6.0 bundles PyYAML, so this stays in the local extra only.
+    "pyyaml>=6.0",
 ]
 
 # Only the pipeline package ships in the wheel; Data/, infra/ and config/ stay out.

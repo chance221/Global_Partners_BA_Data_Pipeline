@@ -1,0 +1,56 @@
+# Environment config. Selected by --env (so --env local loads this file and also
+# supplies the {env} segment of the S3 path). Nothing here is secret: the DB
+# password lives in Secrets Manager and secret_name is only a lookup key.
+
+aws:
+  region: us-east-1
+  secret_name: GlobalPartnersDBLogin
+  bucket: globalpartners-project-cjk
+
+database:
+  name: GlobalPartners
+
+layers:
+  raw: raw
+  silver: silver
+  gold: gold
+
+tables:
+  date_dim:
+    source_table: dbo.date_dim
+    load_type: static
+    business_keys: [date_key]
+    required_columns:
+      date_key: date
+      year: smallint
+      month: smallint
+      is_weekend: boolean
+      is_holiday: boolean
+
+  order_items:
+    source_table: dbo.order_items
+    load_type: full
+    business_keys: [ORDER_ID, LINEITEM_ID]
+    required_columns:
+      ORDER_ID: string
+      LINEITEM_ID: string
+      RESTAURANT_ID: string
+      CREATION_TIME_UTC: string
+      ITEM_PRICE: double
+      ITEM_QUANTITY: int
+
+  order_item_options:
+    source_table: dbo.order_item_options
+    load_type: full
+    business_keys: [ORDER_ID, LINEITEM_ID, OPTION_GROUP_NAME, OPTION_NAME]
+    required_columns:
+      ORDER_ID: string
+      LINEITEM_ID: string
+      OPTION_GROUP_NAME: string
+      OPTION_NAME: string
+      OPTION_PRICE: double
+      OPTION_QUANTITY: smallint
+
+
+
+
