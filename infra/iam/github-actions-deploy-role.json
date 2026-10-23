@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "Role GitHub Actions assumes via OIDC.",
+    "  GitHub enforces the branch. The `environment:production` subject carries NO",
+    "  ref, so AWS cannot see which branch a run is on."
+  ],
+  "TrustPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "GitHubActionsDeployFromProductionEnvironment",
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::__ACCOUNT_ID__:oidc-provider/token.actions.githubusercontent.com"
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:sub": "repo:chance221/Global_Partners_BA_Data_Pipeline:environment:production"
+          }
+        }
+      }
+    ]
+  },
+  "PermissionsPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "PublishArtifactsOnly",
+        "_comment": "Confined to artifacts/. CI has no reason to touch raw, the warehouse, or anything else, and this role is the one most exposed to a supply-chain mistake.",
+        "Effect": "Allow",
+        "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
+        "Resource": [
+          "arn:aws:s3:::globalpartners-project-cjk",
+          "arn:aws:s3:::globalpartners-project-cjk/artifacts/*"
+        ]
+      },
+      {
+        "Sid": "UpdateTheJobDefinitions",
+        "_comment": "For the update-job step, which is not written yet -- it needs the real JobUpdate shape from the first manually created job. GetJob is here so CI can diff before applying. Deliberately no CreateJob or DeleteJob: jobs are created by hand, CI only updates them.",
+        "Effect": "Allow",
+        "Action": ["glue:GetJob", "glue:GetJobs", "glue:UpdateJob"],
+        "Resource": [
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:catalog",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-raw-ingest",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-raw-to-silver",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-silver-to-gold"
+        ]
+      }
+    ]
+  }
+}

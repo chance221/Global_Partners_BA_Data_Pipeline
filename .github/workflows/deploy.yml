@@ -1,0 +1,129 @@
+# Build and publish the Glue artifacts.
+#
+# Runs on merges to main. The `production` GitHub environment is the real gate:
+# its deployment-branch rule restricts which refs may deploy, and the AWS trust
+# policy only accepts the token when the job declares that environment. 
+#
+
+# The update-job half is deliberately absent. It needs the real JobUpdate shape
+# from the first manually created job; see infra/README.md.
+name: deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: globalpartners-project-cjk
+  # Java 17 and Python 3.13 match the Glue 6.0 runtime the pins target.
+  JAVA_VERSION: "17"
+  PYTHON_VERSION: "3.13"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Spark 4.x needs Java 17+. Without this the suite dies in the JVM with
+      # an UnsupportedClassVersionError rather than a test failure.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # Ivy resolves the Iceberg and JDBC jars on the first Spark session.
+      # Uncached that is a couple of minutes on every run. Keyed on the file
+      # that pins them, so a version bump invalidates it.
+      - name: Cache Ivy jars
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ivy2
+            ~/.ivy2.5.2
+          key: ivy-${{ runner.os }}-${{ hashFiles('python_scripts/spark/spark_session.py') }}
+          restore-keys: ivy-${{ runner.os }}-
+
+      - run: pip install -e ".[local,dev]"
+
+      - name: pytest
+        env:
+          # conftest sets this itself, so this is belt and braces: config now
+          # selects a glue catalog, and a suite that reached AWS would be slow,
+          # need credentials, and write to a real account.
+          ICEBERG_CATALOG_TYPE: hadoop
+        run: pytest -q
+
+  publish:
+    name: build and upload
+    needs: test
+    runs-on: ubuntu-latest
+    # Required, not cosmetic: declaring it makes the OIDC token's `sub` read
+    # repo:<owner>/<repo>:environment:production, which is exactly what the
+    # trust policy pins. Without it the sub is the ref form and AWS denies the
+    # assume-role with no indication why.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # required to mint the OIDC token for AWS
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install build
+
+      # packages.find includes only python_scripts*, so config/ and glue_jobs/
+      # are deliberately NOT in the wheel. They upload separately below.
+      - name: Build the wheel
+        run: python -m build --wheel
+
+      # OIDC federation, not a stored access key: nothing long-lived lives in
+      # GitHub Secrets. The role's trust policy is in
+      # infra/iam/github-actions-deploy-role.json and must name this repo.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload artifacts
+        run: |
+          set -euo pipefail
+          PREFIX="s3://${S3_BUCKET}/artifacts/${GITHUB_SHA}"
+
+          # The wheel -- installed by --additional-python-modules.
+          aws s3 cp dist/ "${PREFIX}/" --recursive --exclude "*" --include "*.whl"
+
+          # Entry scripts -- one is the ScriptLocation of each Glue job.
+          aws s3 cp glue_jobs/ "${PREFIX}/glue_jobs/" --recursive --include "*.py"
+
+          # Config -- delivered by --extra-files, which flattens to the job's
+          # working directory, which is why the jobs pass --config-dir '.'
+          aws s3 cp config/ "${PREFIX}/config/" --recursive --include "*.yaml"
+
+          echo "ARTIFACT_PREFIX=${PREFIX}" >> "$GITHUB_STEP_SUMMARY"
+          aws s3 ls "${PREFIX}/" --recursive --human-readable
+
+      - name: What to point a Glue job at
+        run: |
+          {
+            echo "### Glue job parameters for this build"
+            echo '```'
+            echo "ScriptLocation            s3://${S3_BUCKET}/artifacts/${GITHUB_SHA}/glue_jobs/<job>.py"
+            echo "--additional-python-modules s3://${S3_BUCKET}/artifacts/${GITHUB_SHA}/globalpartners_pipeline-0.1.0-py3-none-any.whl"
+            echo "--extra-files             s3://${S3_BUCKET}/artifacts/${GITHUB_SHA}/config/local.yaml"
+            echo "--config-dir              ."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

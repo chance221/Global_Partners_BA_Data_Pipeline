@@ -31,6 +31,38 @@ local = [
     "pyyaml>=6.0",
 ]
 
+# Test-only. Separate from `local` so a dev can install the runtime without the
+# test tooling, and so nothing test-related can drift into the Glue wheel.
+dev = [
+    "pytest>=8.0",
+]
+
+# The Streamlit dashboard. pyiceberg rather than Spark on purpose: it is pure
+# Python, so the app needs no JVM and runs on a small EC2 instance. It reads the
+# Glue catalog the pipeline writes, which is why `catalog: type: glue` matters --
+# pyiceberg has no hadoop catalog implementation and cannot see those tables.
+# The [glue] extra pulls boto3; [pyarrow] is the scan-to-pandas path.
+app = [
+    "streamlit>=1.40",
+    "pyiceberg[glue,pyarrow]>=0.8",
+    "pandas>=2.2",
+]
+
+# Notebook review tooling. pyarrow reads S3 through its own bundled AWS SDK, so
+# this deliberately avoids s3fs -- that pulls in aiobotocore, which pins botocore
+# to a narrow range and fights the installed boto3.
+review = [
+    "pandas>=2.2",
+    "pyarrow>=17.0",
+    "ipykernel>=6.29",
+]
+
 # Only the pipeline package ships in the wheel; Data/, infra/ and config/ stay out.
 [tool.setuptools.packages.find]
 include = ["python_scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "spark: needs a real Spark session (slow -- JVM start plus jar resolution)",
+]

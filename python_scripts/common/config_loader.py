@@ -16,90 +16,22 @@ an error -- it is destructive or silently corrupting:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+
 from pathlib import Path
 from typing import Any
 
+from python_scripts.common.models.config_models import (
+    AppConfig,
+    GoldTableConfig,
+    TableConfig,
+)
+
 import yaml
 
-VALID_LOAD_TYPES = frozenset({"static", "full"})
+
 REQUIRED_SECTIONS = ("aws", "database", "layers", "tables")
 
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
-
-
-@dataclass(frozen=True)
-class TableConfig:
-    """One dataset's ingestion contract.
-
-    Args:
-        source_table: schema-qualified JDBC identifier, e.g. "dbo.order_items".
-        load_type: "static" (one copy, overwritten) or "full" (one snapshot per
-            batch date, written under batch_year=/batch_month=/batch_day=).
-        business_keys: columns identifying a row for the SCD1 merge.
-        required_columns: column name -> expected source type. A contract
-            subset, not the full schema; unlisted columns are allowed.
-    """
-
-    source_table: str
-    load_type: str
-    business_keys: list[str]
-    required_columns: dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.load_type not in VALID_LOAD_TYPES:
-            raise ValueError(
-                f"load_type {self.load_type!r} is not one of "
-                f"{sorted(VALID_LOAD_TYPES)}"
-            )
-
-        if not self.business_keys:
-            raise ValueError("business_keys must not be empty")
-
-        duplicates = {k for k in self.business_keys
-                      if self.business_keys.count(k) > 1}
-        if duplicates:
-            raise ValueError(f"business_keys contains duplicates: {sorted(duplicates)}")
-
-        # A business key is by definition a column we depend on, so it must also
-        # appear in required_columns. This catches a rename applied in one place
-        # and not the other.
-        undeclared = set(self.business_keys) - set(self.required_columns)
-        if self.required_columns and undeclared:
-            raise ValueError(
-                f"business_keys not listed in required_columns: {sorted(undeclared)}"
-            )
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    """Flattened view of one environment's config file."""
-
-    env: str
-    region: str
-    secret_name: str
-    bucket: str
-    database: str
-    layers: dict[str, str]
-    tables: dict[str, TableConfig]
-
-    def get_table_config(self, name: str) -> TableConfig:
-        """Look up one dataset, with an error that lists the valid names."""
-        try:
-            return self.tables[name]
-        except KeyError:
-            raise KeyError(
-                f"unknown dataset {name!r}; config defines {sorted(self.tables)}"
-            ) from None
-
-    def layer(self, name: str) -> str:
-        """Resolve a layer name ("raw" -> the configured path segment)."""
-        try:
-            return self.layers[name]
-        except KeyError:
-            raise KeyError(
-                f"unknown layer {name!r}; config defines {sorted(self.layers)}"
-            ) from None
 
 
 def load_config(env: str, config_dir: Path | str | None = None) -> AppConfig:
@@ -155,6 +87,19 @@ def load_config(env: str, config_dir: Path | str | None = None) -> AppConfig:
         except ValueError as exc:
             raise ValueError(f"{path}: table {name!r}: {exc}") from exc
 
+    gold: dict[str, GoldTableConfig] = {}
+    for name, entry in (raw.get("gold") or {}).items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: gold table {name!r} must be a mapping")
+        try:
+            gold[name] = GoldTableConfig(**entry)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{path}: gold table {name!r}: {exc}") from exc
+
+    catalog = raw.get("catalog") or {}
+    if not isinstance(catalog, dict):
+        raise ValueError(f"{path}: 'catalog' section must be a mapping")
+
     try:
         return AppConfig(
             env=env,
@@ -164,6 +109,9 @@ def load_config(env: str, config_dir: Path | str | None = None) -> AppConfig:
             database=raw["database"]["name"],
             layers=raw["layers"],
             tables=tables,
+            gold=gold,
+            catalog_type=catalog.get("type", "hadoop"),
+            warehouse=catalog.get("warehouse"),
         )
     except KeyError as exc:
         raise ValueError(f"{path}: missing required key {exc}") from exc

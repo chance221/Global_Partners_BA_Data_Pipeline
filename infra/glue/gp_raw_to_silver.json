@@ -1,0 +1,39 @@
+{
+  "JobMode": "SCRIPT",
+  "JobRunQueuingEnabled": false,
+  "Description": "",
+  "Role": "arn:aws:iam::__ACCOUNT_ID__:role/GlobalPartnersGluePolicy",
+  "ExecutionProperty": {
+    "MaxConcurrentRuns": 1
+  },
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "__ARTIFACT_PREFIX__/gp_raw_to_silver.py",
+    "PythonVersion": "3"
+  },
+  "DefaultArguments": {
+    "--all": "",
+    "--enable-spark-ui-legacy-path": "true",
+    "--config-dir": ".",
+    "--job-bookmark-option": "job-bookmark-disable",
+    "--datalake-formats": "iceberg",
+    "--TempDir": "s3://globalpartners-project-cjk/glue-temp/",
+    "--enable-metrics": "",
+    "--period": "2026-10-16",
+    "--spark-event-logs-path": "s3://globalpartners-project-cjk/prod/sparkHistoryLogs/",
+    "--enable-job-insights": "true",
+    "--additional-python-modules": "__ARTIFACT_PREFIX__/globalpartners_pipeline-0.1.0-py3-none-any.whl",
+    "--enable-observability-metrics": "true",
+    "--conf": "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions --conf spark.eventLog.rolling.enabled=true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--job-language": "python",
+    "--env": "prod",
+    "--extra-files": "__ARTIFACT_PREFIX__/config/prod.yaml"
+  },
+  "MaxRetries": 0,
+  "Timeout": 20,
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 2,
+  "GlueVersion": "6.0",
+  "ExecutionClass": "STANDARD"
+}

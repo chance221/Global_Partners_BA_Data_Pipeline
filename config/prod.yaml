@@ -1,0 +1,130 @@
+# Environment config. Selected by --env (so --env prod loads this file and also
+# supplies the {env} segment of the S3 path). Nothing here is secret: the DB
+# password lives in Secrets Manager and secret_name is only a lookup key.
+#
+# The tables: and gold: sections below duplicate local.yaml. config_loader has
+# no inheritance between environments -- each file stands alone -- so a contract
+# change has to be made in both. Deliberate for now (one file is the whole
+# truth for an environment, and a prod run cannot be changed by editing local),
+# but it is the first thing to revisit if a third environment appears.
+
+aws:
+  region: us-east-1
+  secret_name: GlobalPartnersDBLogin
+  bucket: globalpartners-project-cjk
+
+# Which Iceberg catalog backend the jobs configure.
+#
+#   glue    AWS Glue Data Catalog, warehouse on S3. Spark AND PyIceberg both
+#           read it, which is what lets the Streamlit app query the pipeline's
+#           own tables under the same identifiers -- iceberg.gold.<table> here,
+#           gold.<table> there. Namespaces become Glue databases, created on
+#           first write, so nothing is provisioned by hand.
+#   hadoop  A directory catalog, warehouse anywhere. No AWS and nothing to
+#           create, but Spark-only: PyIceberg cannot read it, so the dashboard
+#           would not see these tables.
+#
+# The test suite forces hadoop plus a temp directory through
+# ICEBERG_CATALOG_TYPE and ICEBERG_WAREHOUSE, which override this. Set the same
+# two variables to work offline:
+#   ICEBERG_CATALOG_TYPE=hadoop ICEBERG_WAREHOUSE=file:///.../warehouse
+catalog:
+  type: glue
+  warehouse: s3://globalpartners-project-cjk/prod/warehouse
+
+database:
+  name: GlobalPartners
+
+layers:
+  raw: raw
+  silver: silver
+  gold: gold
+  # Rows that could not be processed, with their original values and a reason.
+  quarantine: quarantine
+
+tables:
+  date_dim:
+    source_table: dbo.date_dim
+    load_type: static
+    business_keys: [date_key]
+    required_columns:
+      date_key: date
+      year: smallint
+      month: smallint
+      is_weekend: boolean
+      is_holiday: boolean
+      holiday_name: string
+    silver_write: replace
+
+  order_items:
+    source_table: dbo.order_items
+    load_type: incremental
+    business_keys: [ORDER_ID, LINEITEM_ID]
+    required_columns:
+      ORDER_ID: string
+      LINEITEM_ID: string
+      RESTAURANT_ID: string
+      CREATION_TIME_UTC: string
+      ITEM_PRICE: double
+      ITEM_QUANTITY: int
+      APP_NAME: string
+      USER_ID: string
+      CURRENCY: string
+      ITEM_NAME: string
+      ITEM_CATEGORY: string
+      INSERTED_AT: timestamp
+      IS_LOYALTY: boolean
+    silver_transforms:
+      creation_time_utc: timestamp
+      item_price: decimal(10,2)
+    watermark_column: inserted_at
+    silver_write: merge
+    # months, not days: at ~150 rows per day, days() produced 1336 partitions
+    # holding 11 KB each. Sized so a partition is a worthwhile file, not so
+    # it matches how the data is queried -- see the small-file note in Readme.
+    silver_partition_by: ["months(creation_time_utc)"]
+
+  order_item_options:
+    source_table: dbo.order_item_options
+    load_type: incremental
+    business_keys: [ORDER_ID, LINEITEM_ID, OPTION_GROUP_NAME, OPTION_NAME]
+    required_columns:
+      ORDER_ID: string
+      LINEITEM_ID: string
+      OPTION_GROUP_NAME: string
+      OPTION_NAME: string
+      OPTION_PRICE: double
+      OPTION_QUANTITY: smallint
+    silver_transforms:
+      option_price: decimal(10, 2)    
+    watermark_column: inserted_at
+    silver_write: delete_insert
+    silver_scope_keys: [ORDER_ID]
+
+
+# Derived tables built from silver. Each name must match a transform registered
+# in python_scripts/silver_to_gold/transforms/.
+#
+# event_time_column drives the incremental read: a run finds which event dates
+# this batch touched, recomputes those dates completely from all of silver, and
+# replaces them. Recomputing rather than accumulating is what keeps non-additive
+# measures (distinct counts, averages) correct. Omit it to rebuild the whole
+# table every run.
+gold:
+  daily_restaurant_sales:
+    depends_on: [order_items]
+    event_time_column: creation_time_utc
+    grain_keys: [sales_date, restaurant_id]
+    scope_keys: [sales_date]
+    write: delete_insert
+    partition_by: ["months(sales_date)"]
+
+  # No event_time_column on purpose: a rank over all history cannot be built
+  # from an incremental slice, so every run rebuilds this table in full. Cheap
+  # -- the output is one row per restaurant. `replace` rather than
+  # delete_insert so a restaurant that stops trading cannot keep a stale rank.
+  # Unpartitioned for the same reason: there is not enough of it to split.
+  restaurant_revenue_rank:
+    depends_on: [order_items]
+    grain_keys: [restaurant_id]
+    write: replace

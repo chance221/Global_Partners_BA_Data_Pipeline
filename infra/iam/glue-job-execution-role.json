@@ -1,0 +1,117 @@
+{
+  "_comment": [
+    "Execution role assumed by the three Glue jobs. Replace __ACCOUNT_ID__ before use.",
+    "",
+    "Scoped to prefixes, never the bucket root. That matters beyond least privilege:",
+    "a bucket-wide rule would also cover the Iceberg warehouse, and lifecycle or",
+    "permission changes aimed at raw Parquet would break the tables.",
+    "",
+    "raw is read-only here because only raw_ingest writes it, and raw_ingest needs",
+    "the extra Secrets Manager and RDS access that silver and gold do not. Split this",
+    "into two roles if you want raw_ingest's reach kept off the other two jobs."
+  ],
+  "TrustPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": { "Service": "glue.amazonaws.com" },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "PermissionsPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "ReadTheRawDataLake",
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Resource": [
+          "arn:aws:s3:::globalpartners-project-cjk",
+          "arn:aws:s3:::globalpartners-project-cjk/local/raw/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/raw/*"
+        ]
+      },
+      {
+        "Sid": "ReadWriteTheIcebergWarehouse",
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ],
+        "Resource": [
+          "arn:aws:s3:::globalpartners-project-cjk",
+          "arn:aws:s3:::globalpartners-project-cjk/local/warehouse/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/warehouse/*"
+        ]
+      },
+      {
+        "Sid": "WriteQuarantineAndRawOnIngest",
+        "Effect": "Allow",
+        "Action": ["s3:PutObject", "s3:DeleteObject"],
+        "Resource": [
+          "arn:aws:s3:::globalpartners-project-cjk/local/raw/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/raw/*",
+          "arn:aws:s3:::globalpartners-project-cjk/local/quarantine/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/quarantine/*"
+        ]
+      },
+      {
+        "Sid": "ReadTheDeployedArtifactsAndTempDir",
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Resource": [
+          "arn:aws:s3:::globalpartners-project-cjk/artifacts/*"
+        ]
+      },
+      {
+        "Sid": "GlueTempDir",
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        "Resource": "arn:aws:s3:::globalpartners-project-cjk/glue-temp/*"
+      },
+      {
+        "Sid": "IcebergNeedsTheCatalogAsItsMetastore",
+        "_comment": "CreateDatabase is what lets the CREATE NAMESPACE in iceberg_write bootstrap the silver and gold databases on first write. Drop it once both exist if you prefer.",
+        "Effect": "Allow",
+        "Action": [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:CreateDatabase",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:CreateTable",
+          "glue:UpdateTable",
+          "glue:DeleteTable"
+        ],
+        "Resource": [
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:catalog",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:database/silver",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:database/gold",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/silver/*",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/gold/*"
+        ]
+      },
+      {
+        "Sid": "ContinuousLogsForDebugging",
+        "Effect": "Allow",
+        "Action": [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:__ACCOUNT_ID__:log-group:/aws-glue/*"
+      },
+      {
+        "Sid": "RawIngestOnly_DatabasePassword",
+        "_comment": "Only raw_ingest reads the DB. silver and gold never touch Secrets Manager or RDS.",
+        "Effect": "Allow",
+        "Action": "secretsmanager:GetSecretValue",
+        "Resource": "arn:aws:secretsmanager:us-east-1:__ACCOUNT_ID__:secret:GlobalPartnersDBLogin-*"
+      }
+    ]
+  }
+}

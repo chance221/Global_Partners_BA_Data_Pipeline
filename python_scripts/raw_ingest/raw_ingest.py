@@ -1,37 +1,20 @@
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from pyspark.sql import DataFrame
 
 from python_scripts.io_utils.jdbc_source import get_source_table_data 
+from python_scripts.io_utils.extract_query import build_extract_table
 from python_scripts.io_utils.s3_link import write_to_s3_bucket
+from python_scripts.io_utils.quarantine import (
+    split_rejects, null_key_reasons, write_quarantine,
+)
 from python_scripts.io_utils.paths import build_path
 from python_scripts.spark.spark_session import create_spark_session
 from python_scripts.io_utils.get_db_secret import get_rds_credentials
 from python_scripts.common.config_loader import load_config, AppConfig
-
-# region Parse Arguments
-#**********************************************
-def parse_data_date(value: str) -> datetime:
-    """Parse and validate a YYYY-MM-DD batch date."""
-    return datetime.strptime(value, "%Y-%m-%d")
-
-# endregion ********************************
+from python_scripts.common.helpers import parse_data_date, check_business_keys_present_in_table
 
 
-
-# region Check Data
-#**********************************************
-
-def check_business_keyss_present_in_table(businessKeys:list[str], table:str, df:DataFrame):
-   missing = set(businessKeys) - set(df.columns)
-
-   if missing:
-      raise ValueError(
-          f"{table}: business_keys missing from source: {sorted(missing)}; "
-          f"source has {sorted(df.columns)}"
-      )
-
-# endregion
 
 
 def run_raw_ingest(spark, s3Protocol, appConfig:AppConfig, batch_date:datetime, tables:list[str]):
@@ -42,26 +25,49 @@ def run_raw_ingest(spark, s3Protocol, appConfig:AppConfig, batch_date:datetime, 
     rawLayer = appConfig.layers['raw']
     mode = "overwrite"
     failures = {}
-    
+
+
     for table in  tables:
       try:
         tableConfig = appConfig.get_table_config(table)
         path = build_path(s3Protocol, bucket, env, rawLayer, table, batch_date, tableConfig.load_type)
 
-        df = get_source_table_data(spark, creds, tableConfig.source_table, db)
+        # For an incremental table this is a derived table carrying the window
+        # predicate, so SQL Server filters instead of Spark.
+        source = build_extract_table(tableConfig, batch_date, batch_date + timedelta(days=1))
 
-        check_business_keyss_present_in_table(tableConfig.business_keys, table, df)
-        
-        write_to_s3_bucket(df, path, mode)
+        # Cached because both halves of the split derive from it, and without
+        # it the JDBC source would be read twice.
+        df = get_source_table_data(spark, creds, source, db).cache()
+
+        check_business_keys_present_in_table(tableConfig.business_keys, table, df)
+
+        # A null business key is the only row-level defect visible this early:
+        # such a row can never be merged, so it is held rather than landed.
+        accepted, rejected = split_rejects(
+            df, null_key_reasons(tableConfig.business_keys)
+        )
+
+        held = write_quarantine(rejected, s3Protocol, appConfig, table,
+                                batch_date, "raw_ingest")
+
+        write_to_s3_bucket(accepted, path, mode)
 
         rows = spark.read.parquet(path).count()
-        print(f"{table}: {rows} rows -> {path}")
+        window = (f" [{batch_date:%Y-%m-%d} on {tableConfig.watermark_column}]"
+                  if tableConfig.load_type == "incremental" else "")
+        quarantined = f", {held} quarantined" if held else ""
+        print(f"{table}: {rows} rows -> {path}{window}{quarantined}")
+        df.unpersist()
 
       except Exception as exc:
-         failures[table] = exc
+         # Rendered to text while the JVM is still alive -- see the same note in
+         # run_raw_to_silver. A Py4JJavaError read after the JVM dies raises
+         # ConnectionRefusedError instead of reporting what went wrong.
+         failures[table] = f"{type(exc).__name__}: {exc}"
     if failures:
-        for name, exc in failures.items():
-          print(f"  {name}: {type(exc).__name__}: {exc}")
+        for name, message in failures.items():
+          print(f"  {name}: {message}")
         raise RuntimeError(f"ingest failed for: {sorted(failures)}")
     
       
@@ -71,6 +77,8 @@ def run_raw_ingest(spark, s3Protocol, appConfig:AppConfig, batch_date:datetime, 
 def main() -> None:
   parser = argparse.ArgumentParser(description="Run the raw ingest job")
   parser.add_argument("--env", required=True, choices=["local", "prod"])
+  parser.add_argument("--config-dir",
+                      help="directory holding {env}.yaml; defaults to the repo config/. Pass '.' on Glue -- the wheel installs into site-packages where that path does not exist, and --extra-files lands in the working directory")
   parser.add_argument("--period", required=True, type=parse_data_date, help="Daily batch perioc in 'YYYY-MM-DD' format")
   group = parser.add_mutually_exclusive_group(required=True)
   group.add_argument("--tables", help="tables to ingest from db into raw layer", nargs="+")
@@ -78,7 +86,7 @@ def main() -> None:
   args, _unknown_args = parser.parse_known_args()  
   
   env = args.env  
-  appConfig = load_config(env)
+  appConfig = load_config(env, args.config_dir)
   batch_date = args.period
 
   if args.all:
@@ -92,12 +100,17 @@ def main() -> None:
   if unknown:
     raise ValueError(f"unknown dataset(s) {sorted(unknown)}; config defines {sorted(appConfig.tables)}")
 
-  spark, s3Protocol = create_spark_session()
+  spark, s3Protocol = create_spark_session(appConfig)
 
   try:
     run_raw_ingest(spark, s3Protocol, appConfig, batch_date, tables)
   finally:
-     spark.stop()  
+    # A dead JVM makes stop() raise as well, which would replace the real
+    # error with a connection error. Nothing to be done either way.
+    try:
+      spark.stop()
+    except Exception:
+      pass
 
 
 if __name__ == "__main__":
