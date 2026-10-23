@@ -63,6 +63,11 @@ include = ["python_scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Put the repo root on sys.path so `from tests.conftest import ...` resolves.
+# `python -m pytest` prepends the working directory and the bare `pytest`
+# console script does not, so without this the suite passes locally and fails
+# in CI, which is exactly what happened.
+pythonpath = ["."]
 markers = [
     "spark: needs a real Spark session (slow -- JVM start plus jar resolution)",
 ]
