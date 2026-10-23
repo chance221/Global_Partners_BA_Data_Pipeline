@@ -89,15 +89,7 @@ jobs:
       # are deliberately NOT in the wheel. They upload separately below.
       - name: Build the wheel
         run: python -m build --wheel
-      
-      #DEBUG STEPR EMOVE BEFORE FINAL PUSH
-      - name: Debug OIDC claims (temporary)
-        run: |
-          TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
-          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null \
-            | jq '{sub, aud, repository, repository_owner, environment, ref}'
-
+     
 
       # OIDC federation, not a stored access key: nothing long-lived lives in
       # GitHub Secrets. The role's trust policy is in
