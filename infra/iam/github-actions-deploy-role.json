@@ -1,8 +1,44 @@
 {
   "_comment": [
-    "Role GitHub Actions assumes via OIDC.",
-    "  GitHub enforces the branch. The `environment:production` subject carries NO",
-    "  ref, so AWS cannot see which branch a run is on."
+    "Role GitHub Actions assumes via OIDC. Replace __ACCOUNT_ID__ before use,",
+    "then put the role ARN in the repo secret AWS_DEPLOY_ROLE_ARN.",
+    "",
+    "One-time setup -- the OIDC provider is per account, not per repo:",
+    "  aws iam create-open-id-connect-provider \\",
+    "    --url https://token.actions.githubusercontent.com \\",
+    "    --client-id-list sts.amazonaws.com \\",
+    "    --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1",
+    "",
+    "THE NUMERIC IDS IN THE SUBJECT ARE DELIBERATE. GitHub appends immutable",
+    "ids to the owner and repo segments: @39056884 is the account id and",
+    "@1412523092 the repository id. The plain name form",
+    "  repo:chance221/Global_Partners_BA_Data_Pipeline:environment:production",
+    "does NOT match and fails with 'Not authorized to perform",
+    "sts:AssumeRoleWithWebIdentity'. Matching the ids is also stronger: a",
+    "name-based subject can be satisfied by whoever registers the name after a",
+    "repo or account is deleted, while the ids cannot be reused.",
+    "",
+    "A repo TRANSFER changes the owner id, and these ids are not secret --",
+    "GitHub exposes both through its public API.",
+    "",
+    "To re-derive them, print the claims from a workflow run:",
+    "  TOKEN=$(curl -sH \"Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN\" \\",
+    "    \"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com\" | jq -r .value)",
+    "  echo \"$TOKEN\" | cut -d. -f2 | base64 -d | jq .sub",
+    "Only ever decode the payload -- the whole token is a credential.",
+    "",
+    "HOW THE MAIN-ONLY GATE WORKS -- the division of labour matters:",
+    "  GitHub enforces the branch. The environment subject carries no ref, so",
+    "  AWS cannot see which branch a run is on. The restriction lives in",
+    "  Settings > Environments > production > Deployment branches and tags,",
+    "  set to the main branch.",
+    "  AWS enforces the repo and the environment. That is all it can see.",
+    "  The workflow must declare `environment: production` on the publish job,",
+    "  or the subject is the ref form and every assume-role is denied.",
+    "",
+    "Two condition operators in one Condition block are ANDed, and a token has",
+    "a single sub claim -- so pairing a StringEquals on one subject form with a",
+    "StringLike on another can never match. One operator, one subject form."
   ],
   "TrustPolicy": {
     "Version": "2012-10-17",
@@ -17,7 +53,7 @@
         "Condition": {
           "StringEquals": {
             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-            "token.actions.githubusercontent.com:sub": "repo:chance221/Global_Partners_BA_Data_Pipeline:environment:production"
+            "token.actions.githubusercontent.com:sub": "repo:chance221@39056884/Global_Partners_BA_Data_Pipeline@1412523092:environment:production"
           }
         }
       }
@@ -30,7 +66,11 @@
         "Sid": "PublishArtifactsOnly",
         "_comment": "Confined to artifacts/. CI has no reason to touch raw, the warehouse, or anything else, and this role is the one most exposed to a supply-chain mistake.",
         "Effect": "Allow",
-        "Action": ["s3:PutObject", "s3:GetObject", "s3:ListBucket"],
+        "Action": [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ],
         "Resource": [
           "arn:aws:s3:::globalpartners-project-cjk",
           "arn:aws:s3:::globalpartners-project-cjk/artifacts/*"
@@ -40,7 +80,11 @@
         "Sid": "UpdateTheJobDefinitions",
         "_comment": "For the update-job step, which is not written yet -- it needs the real JobUpdate shape from the first manually created job. GetJob is here so CI can diff before applying. Deliberately no CreateJob or DeleteJob: jobs are created by hand, CI only updates them.",
         "Effect": "Allow",
-        "Action": ["glue:GetJob", "glue:GetJobs", "glue:UpdateJob"],
+        "Action": [
+          "glue:GetJob",
+          "glue:GetJobs",
+          "glue:UpdateJob"
+        ],
         "Resource": [
           "arn:aws:glue:us-east-1:__ACCOUNT_ID__:catalog",
           "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-raw-ingest",
