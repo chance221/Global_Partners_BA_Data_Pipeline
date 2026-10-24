@@ -7,7 +7,7 @@ from python_scripts.common.models.config_models import AppConfig
 
 
 from python_scripts.spark.spark_session import create_spark_session
-from python_scripts.common.helpers import parse_data_date, check_business_keys_present_in_table
+from python_scripts.common.helpers import parse_data_date, yesterday_utc, check_business_keys_present_in_table
 from python_scripts.raw_to_silver.raw_transforms import (
     apply_dynamic_transform, silver_reject_reasons,
 )
@@ -62,7 +62,9 @@ def main() -> None:
     parser.add_argument("--env", required=True, choices=["local", "prod"])
     parser.add_argument("--config-dir",
                         help="directory holding {env}.yaml; defaults to the repo config/. Pass '.' on Glue -- the wheel installs into site-packages where that path does not exist, and --extra-files lands in the working directory")
-    parser.add_argument("--period", required=True, type=parse_data_date, help="Daily batch perioc in 'YYYY-MM-DD' format")
+    parser.add_argument("--period", type=parse_data_date,
+                        default=yesterday_utc(),
+                        help="Batch period 'YYYY-MM-DD'; defaults to yesterday UTC so a scheduled run needs no date computed for it")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--tables", help="tables to ingest from db into raw layer", nargs="+")
     group.add_argument("--all", action="store_true", help="run every dataset config")

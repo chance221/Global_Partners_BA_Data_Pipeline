@@ -78,7 +78,7 @@
       },
       {
         "Sid": "UpdateTheJobDefinitions",
-        "_comment": "For the update-job step, which is not written yet -- it needs the real JobUpdate shape from the first manually created job. GetJob is here so CI can diff before applying. Deliberately no CreateJob or DeleteJob: jobs are created by hand, CI only updates them.",
+        "_comment": "For the update-job step. Names must match the real jobs exactly, underscores included. Deliberately no CreateJob or DeleteJob: jobs are created by hand, CI only updates.",
         "Effect": "Allow",
         "Action": [
           "glue:GetJob",
@@ -87,10 +87,22 @@
         ],
         "Resource": [
           "arn:aws:glue:us-east-1:__ACCOUNT_ID__:catalog",
-          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-raw-ingest",
-          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-raw-to-silver",
-          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp-silver-to-gold"
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp_raw_ingest",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp_raw_to_silver",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:job/gp_silver_to_gold"
         ]
+      },
+      {
+        "Sid": "PassExecutionRoleToGlue",
+        "_comment": "UpdateJob carries a Role field, so re-asserting it counts as passing that role and needs iam:PassRole. Without this the deploy fails with a PassRole error that never mentions Glue. The PassedToService condition limits it to Glue, so the role cannot be handed to anything else. Note for simulate-principal-policy: the resource here is the ROLE being passed, not the job, and the context key has to be supplied explicitly or the condition evaluates false and reports implicitDeny.",
+        "Effect": "Allow",
+        "Action": "iam:PassRole",
+        "Resource": "arn:aws:iam::__ACCOUNT_ID__:role/GlobalPartnersGluePolicy",
+        "Condition": {
+          "StringEquals": {
+            "iam:PassedToService": "glue.amazonaws.com"
+          }
+        }
       }
     ]
   }

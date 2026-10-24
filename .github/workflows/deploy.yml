@@ -56,6 +56,14 @@ jobs:
 
       - run: pip install -e ".[local,dev]"
 
+      # Cheap, and it fails in seconds rather than halfway through a deploy:
+      # catches a leaked account id or a field update-job would reject.
+      - name: Validate the Glue job definitions
+        run: |
+          for f in infra/glue/*.json; do
+            python infra/glue/prepare_job_update.py check "$f"
+          done
+
       - name: pytest
         env:
           # conftest sets this itself, so this is belt and braces: config now
@@ -116,6 +124,27 @@ jobs:
 
           echo "ARTIFACT_PREFIX=${PREFIX}" >> "$GITHUB_STEP_SUMMARY"
           aws s3 ls "${PREFIX}/" --recursive --human-readable
+
+      # Must follow the upload: until the artifacts exist at this prefix, a
+      # repointed job would reference a wheel that is not there yet.
+      #
+      # The job name comes from the filename, so capturing a new job with
+      # infra/glue/capture_jobs.sh is all it takes for CI to manage it.
+      #
+      # NOTE this makes the repo authoritative. A change made in the Glue
+      # console and not captured back is reverted on the next push to main.
+      - name: Point the Glue jobs at this build
+        run: |
+          set -euo pipefail
+          PREFIX="s3://${S3_BUCKET}/artifacts/${GITHUB_SHA}"
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+
+          for f in infra/glue/*.json; do
+            job="$(basename "$f" .json)"
+            python infra/glue/prepare_job_update.py deploy "$f"               --prefix "$PREFIX" --account-id "$ACCOUNT_ID" > /tmp/job-update.json
+            aws glue update-job --job-name "$job"               --job-update file:///tmp/job-update.json >/dev/null
+            echo "  $job -> $PREFIX"
+          done
 
       - name: What to point a Glue job at
         run: |

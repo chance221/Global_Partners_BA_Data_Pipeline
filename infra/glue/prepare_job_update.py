@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 
 READ_ONLY_FIELDS = (
@@ -136,10 +137,58 @@ def deploy(job: dict, prefix: str, account_id: str | None = None) -> dict:
     return job
 
 
+def check(job: dict, path: str) -> int:
+    """Validate a committable JobUpdate. Returns an exit code.
+
+    Errors are things that leak or that update-job rejects; warnings are cost
+    and config choices worth a second look. Safe to run in CI.
+    """
+    errors, warnings = [], []
+    blob = json.dumps(job)
+
+    leaked = sorted(set(re.findall(r"(?<!\d)\d{12}(?!\d)", blob)))
+    if leaked:
+        errors.append(f"a 12-digit account id appears in the file: {leaked}")
+
+    for token in (PLACEHOLDER, ACCOUNT_PLACEHOLDER):
+        if token not in blob:
+            warnings.append(f"{token} not found -- was --real-prefix/--account-id passed?")
+
+    present = [f for f in READ_ONLY_FIELDS if f in job]
+    if present:
+        errors.append(f"update-job rejects these fields: {present}")
+
+    workers = job.get("NumberOfWorkers")
+    if workers != 2:
+        warnings.append(f"NumberOfWorkers is {workers}, not 2 -- the console "
+                        f"defaults to 10, which is 5x the bill here")
+
+    timeout = job.get("Timeout")
+    if timeout is None:
+        warnings.append("no Timeout -- Glue's default is 2880 minutes (48 hours)")
+    elif timeout > 60:
+        warnings.append(f"Timeout is {timeout} minutes; this pipeline runs in ~5")
+
+    args = job.get("DefaultArguments", {})
+    for pinned in ("--period", "--full"):
+        if pinned in args:
+            warnings.append(f"{pinned} is pinned in DefaultArguments -- a "
+                            f"scheduled run cannot vary it")
+
+    label = pathlib.Path(path).name
+    for e in errors:
+        print(f"  ERROR   {label}: {e}", file=sys.stderr)
+    for w in warnings:
+        print(f"  warn    {label}: {w}", file=sys.stderr)
+    if not errors and not warnings:
+        print(f"  ok      {label}", file=sys.stderr)
+    return 1 if errors else 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", choices=["capture", "deploy"])
+    parser.add_argument("mode", choices=["capture", "deploy", "check"])
     parser.add_argument("input", help="path to the JSON file")
     parser.add_argument("--real-prefix",
                         help="capture mode: the S3 prefix to replace with the "
@@ -156,6 +205,9 @@ def main() -> None:
     data = json.loads(pathlib.Path(args.input).read_text(encoding="utf-8"))
     # get-job wraps the job in {"Job": {...}}; a captured file is already bare.
     job = data["Job"] if "Job" in data else data
+
+    if args.mode == "check":
+        sys.exit(check(job, args.input))
 
     if args.mode == "capture":
         if not args.real_prefix:

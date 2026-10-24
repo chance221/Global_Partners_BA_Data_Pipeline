@@ -125,9 +125,9 @@ Then run it through `prepare_job_update.py` in capture mode, which strips the
 read-only fields and templates the artifact prefix:
 
 ```bash
-aws glue get-job --job-name gp_raw_to_silver > /tmp/get-job.json
+aws glue get-job --job-name gp_raw_to_silver > get-job.json
 
-python infra/glue/prepare_job_update.py capture /tmp/get-job.json   --real-prefix s3://globalpartners-project-cjk/artifacts/manual   > infra/glue/gp_raw_to_silver.json
+python infra/glue/prepare_job_update.py capture get-job.json   --real-prefix s3://globalpartners-project-cjk/artifacts/manual   > infra/glue/gp_raw_to_silver.json
 ```
 
 Commit the result. Verify three fields before trusting it:
@@ -149,6 +149,10 @@ CI substitutes the commit being deployed and applies it:
 python infra/glue/prepare_job_update.py deploy infra/glue/gp_raw_to_silver.json   --prefix "s3://$S3_BUCKET/artifacts/$GITHUB_SHA" > job-update.json
 
 aws glue update-job --job-name gp_raw_to_silver --job-update file://job-update.json
+
+# On Windows/Git Bash use a RELATIVE path like this. `/tmp` is bash's own
+# mapping (C:/Users/<you>/AppData/Local/Temp), while the AWS CLI is a native
+# Windows exe that reads file:///tmp/... as C:	mp\... and cannot find it.
 ```
 
 Python rather than jq so the same tool runs on Windows and on the CI runner.

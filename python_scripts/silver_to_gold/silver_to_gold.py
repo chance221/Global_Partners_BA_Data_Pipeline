@@ -13,7 +13,7 @@ import argparse
 from datetime import datetime
 
 from python_scripts.common.config_loader import load_config
-from python_scripts.common.helpers import parse_data_date
+from python_scripts.common.helpers import parse_data_date, yesterday_utc
 from python_scripts.common.models.config_models import AppConfig
 from python_scripts.silver_to_gold.gold_write import write_gold
 from python_scripts.silver_to_gold.silver_read import (
@@ -60,8 +60,10 @@ def main() -> None:
   parser.add_argument("--env", required=True, choices=["local", "prod"])
   parser.add_argument("--config-dir",
                       help="directory holding {env}.yaml; defaults to the repo config/. Pass '.' on Glue -- the wheel installs into site-packages where that path does not exist, and --extra-files lands in the working directory")
-  parser.add_argument("--period", required=True, type=parse_data_date,
-                      help="Daily batch period in 'YYYY-MM-DD' format")
+  parser.add_argument("--period", type=parse_data_date,
+                      default=yesterday_utc(),
+                      help="Batch period 'YYYY-MM-DD'; defaults to yesterday UTC "
+                           "so a scheduled run needs no date computed for it")
   parser.add_argument("--full", action="store_true",
                       help="rebuild every grain instead of only those this batch touched")
   group = parser.add_mutually_exclusive_group(required=True)
