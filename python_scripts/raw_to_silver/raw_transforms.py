@@ -10,11 +10,6 @@ from python_scripts.io_utils.quarantine import (
 
 def silver_reject_reasons(df: DataFrame, tableConfig: TableConfig) -> list[Column]:
   """Every check a raw row must pass before it can be written to silver.
-
-  Evaluated against the raw frame, so the config's lowercase keys are resolved
-  back to the source's actual column spelling first -- Spark would resolve them
-  case-insensitively anyway, but being explicit keeps the reason messages
-  matching the column names a reviewer will see in the quarantine files.
   """
   actual = {c.lower(): c for c in df.columns}
 
@@ -59,7 +54,7 @@ def apply_dynamic_transform(df: DataFrame, tableConfig: TableConfig, batch_date:
           select_exprs.append(F.col(col_name).alias(col_lower))
 
   # A column the contract promises but raw does not have would otherwise be
-  # dropped silently, leaving a narrower silver table and no error.
+  # dropped silently, which is somethign that should fail loudly
   missing = set(req_columns) - {c.lower() for c in df.columns}
   if missing:
     raise ValueError(
@@ -68,8 +63,7 @@ def apply_dynamic_transform(df: DataFrame, tableConfig: TableConfig, batch_date:
     )
 
   # updated_at is wall-clock processing time; batch_date is the logical period
-  # the row belongs to. Only batch_date is reproducible across re-runs, and with
-  # no modified_at anywhere in the source it is the row's only provenance.
+  # the row belongs to.
   select_exprs.append(F.current_timestamp().alias("updated_at"))
   select_exprs.append(
       F.lit(batch_date.strftime("%Y-%m-%d")).cast("date").alias("batch_date")

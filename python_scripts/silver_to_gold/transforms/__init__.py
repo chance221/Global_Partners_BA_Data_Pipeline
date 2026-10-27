@@ -21,7 +21,8 @@ from datetime import datetime
 from pyspark.sql import DataFrame
 
 from python_scripts.silver_to_gold.transforms import (
-    daily_restaurant_sales, restaurant_revenue_rank,
+    customer_lifetime_value, customer_rfm, daily_restaurant_sales,
+    restaurant_revenue_rank,
 )
 
 Transform = Callable[[dict[str, DataFrame], datetime], DataFrame]
@@ -29,6 +30,8 @@ Transform = Callable[[dict[str, DataFrame], datetime], DataFrame]
 TRANSFORMS: dict[str, Transform] = {
     "daily_restaurant_sales": daily_restaurant_sales.build,
     "restaurant_revenue_rank": restaurant_revenue_rank.build,
+    "customer_lifetime_value": customer_lifetime_value.build,
+    "customer_rfm": customer_rfm.build,
 }
 
 

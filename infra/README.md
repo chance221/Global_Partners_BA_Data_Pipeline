@@ -165,11 +165,11 @@ mutable `latest` prefix.
 
 ## Open items
 
-- **`GLUE_COMMAND_ARGUMENTS` is unverified.** `create_spark_session` uses it to
-  detect Glue. If it is not set in 6.0, the Glue branch never runs, execution
-  falls into the local path, and it tries to resolve jars through Ivy. A
-  `print(sorted(os.environ))` in the first run settles it;
-  `"--JOB_NAME" in sys.argv` is the fallback.
+- ~~`GLUE_COMMAND_ARGUMENTS` is unverified.~~ **Confirmed set in Glue 6.0**
+  (2026-10-23): no `added as a dependency` lines appear in any run log, so
+  `spark.jars.packages` was never applied and the Glue branch did fire. That
+  also confirms `spark.conf.set` works on `spark.sql.catalog.*` against the
+  session Glue hands over, because Spark resolves catalogs lazily.
 - **Which env prefix to run.** The existing raw data is under `local/raw/`, so
   `--env prod` reads an empty prefix and silently produces an empty silver
   table. Either run `--env local` on Glue or copy the prefix first.

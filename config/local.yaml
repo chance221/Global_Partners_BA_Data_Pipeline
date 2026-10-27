@@ -19,9 +19,7 @@ aws:
 #           would not see these tables.
 #
 # The test suite forces hadoop plus a temp directory through
-# ICEBERG_CATALOG_TYPE and ICEBERG_WAREHOUSE, which override this. Set the same
-# two variables to work offline:
-#   ICEBERG_CATALOG_TYPE=hadoop ICEBERG_WAREHOUSE=file:///.../warehouse
+# ICEBERG_CATALOG_TYPE and ICEBERG_WAREHOUSE, which override this.
 catalog:
   type: glue
   warehouse: s3://globalpartners-project-cjk/local/warehouse
@@ -33,7 +31,6 @@ layers:
   raw: raw
   silver: silver
   gold: gold
-  # Rows that could not be processed, with their original values and a reason.
   quarantine: quarantine
 
 tables:
@@ -74,8 +71,7 @@ tables:
     watermark_column: inserted_at
     silver_write: merge
     # months, not days: at ~150 rows per day, days() produced 1336 partitions
-    # holding 11 KB each. Sized so a partition is a worthwhile file, not so
-    # it matches how the data is queried -- see the small-file note in Readme.
+    # holding 11 KB each. 
     silver_partition_by: ["months(creation_time_utc)"]
 
   order_item_options:
@@ -96,14 +92,7 @@ tables:
     silver_scope_keys: [ORDER_ID]
 
 
-# Derived tables built from silver. Each name must match a transform registered
-# in python_scripts/silver_to_gold/transforms/.
-#
-# event_time_column drives the incremental read: a run finds which event dates
-# this batch touched, recomputes those dates completely from all of silver, and
-# replaces them. Recomputing rather than accumulating is what keeps non-additive
-# measures (distinct counts, averages) correct. Omit it to rebuild the whole
-# table every run.
+
 gold:
   daily_restaurant_sales:
     depends_on: [order_items]
@@ -112,13 +101,44 @@ gold:
     scope_keys: [sales_date]
     write: delete_insert
     partition_by: ["months(sales_date)"]
+    output_columns:
+      sales_date: date
+      restaurant_id: string
+      total_orders: bigint
+      total_revenue: decimal(18,2)
+      avg_order_total: decimal(10,2)
+      week_start: date
 
-  # No event_time_column on purpose: a rank over all history cannot be built
-  # from an incremental slice, so every run rebuilds this table in full. Cheap
-  # -- the output is one row per restaurant. `replace` rather than
-  # delete_insert so a restaurant that stops trading cannot keep a stale rank.
-  # Unpartitioned for the same reason: there is not enough of it to split.
+
   restaurant_revenue_rank:
     depends_on: [order_items]
     grain_keys: [restaurant_id]
     write: replace
+    output_columns:
+      restaurant_id: string
+      total_revenue: decimal(18,2)
+      revenue_rank: int
+
+  customer_lifetime_value:
+    depends_on: [order_items]
+    grain_keys: [user_id]
+    write: replace
+    output_columns:
+      user_id: string
+      total_lifetime_revenue: decimal(18,2)
+      total_orders: bigint
+      clv_segment: string
+      avg_order_value: decimal(10,2)
+
+  customer_rfm:
+    depends_on: [order_items]
+    grain_keys: [user_id]
+    write: replace
+    output_columns:
+      user_id: string
+      segment: string
+      segment_group: string
+      orders_last90d: bigint
+      spend_last90d: decimal(18,2)
+      vip_spend_cut: decimal(18,2)
+      anchor_date: date

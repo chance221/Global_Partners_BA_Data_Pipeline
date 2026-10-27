@@ -43,11 +43,7 @@ def run_raw_to_silver(spark, s3Protocol, appConfig:AppConfig, batch_date:datetim
       quarantined = f" ({held} quarantined)" if held else ""
       print(f"{table}: {outcome}{quarantined}")
     except Exception as exc:
-       # Rendered to text here, while the JVM is still alive. A Py4JJavaError
-       # fetches its message from the JVM when it is formatted, so holding the
-       # object and printing it after the loop loses the message entirely if
-       # the JVM has since died -- the print raises ConnectionRefusedError and
-       # the only record of what actually failed is gone.
+       
        failures[table] = f"{type(exc).__name__}: {exc}"
 
   if failures:
@@ -90,8 +86,6 @@ def main() -> None:
     try:
       run_raw_to_silver(spark, s3Protocol, appConfig, batch_date, tables)
     finally:
-      # A dead JVM makes stop() raise as well, which would replace the real
-      # error with a connection error. Nothing to be done either way.
       try:
         spark.stop()
       except Exception:

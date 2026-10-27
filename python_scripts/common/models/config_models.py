@@ -109,6 +109,17 @@ class GoldTableConfig:
             every run, which is right for a small dimension.
         write: how the batch is applied. See VALID_WRITE_STRATEGIES.
         partition_by: Iceberg partition transforms, applied at creation only.
+        output_columns: column name -> Spark type, for the columns consumers
+            depend on. Deliberately an *output* contract, the opposite
+            direction to TableConfig.required_columns, which is an input
+            contract against raw -- hence the different name.
+
+            Deliberately a subset, not the full schema. A gold table is a
+            published interface, so renaming a column consumers read is a
+            breaking change and should cost a config edit; but listing every
+            column would make each additive change a two-place edit and the
+            test fail on harmless additions. Declare what a dashboard would
+            break without, and leave the rest to the transform.
     """
 
     depends_on: list[str]
@@ -117,6 +128,7 @@ class GoldTableConfig:
     event_time_column: str | None = None
     write: str = "delete_insert"
     partition_by: list[str] = field(default_factory=list)
+    output_columns: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.depends_on:
@@ -141,6 +153,15 @@ class GoldTableConfig:
             raise ValueError(
                 f"scope_keys not in grain_keys: {sorted(outside)}; the delete "
                 f"would remove rows this batch cannot replace"
+            )
+
+        # The grain is the one thing every consumer joins on, so it cannot be
+        # left out of a declared contract. Mirrors the business_keys check on
+        # TableConfig above.
+        undeclared = set(self.grain_keys) - set(self.output_columns)
+        if self.output_columns and undeclared:
+            raise ValueError(
+                f"grain_keys not listed in output_columns: {sorted(undeclared)}"
             )
 
 

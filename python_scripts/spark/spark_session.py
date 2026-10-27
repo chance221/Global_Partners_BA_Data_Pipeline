@@ -98,7 +98,9 @@ def create_spark_session(appConfig: AppConfig | None = None):
     `appConfig` supplies the catalog backend and warehouse. 
 
     """
-    # Detect if running on AWS Glue
+    # Detect if running on AWS Glue. Confirmed present in Glue 6.0 -- a run
+    # that took the local branch instead would show Ivy resolving jars, and no
+    # run log has ever contained those lines.
     is_glue = "GLUE_COMMAND_ARGUMENTS" in os.environ
 
     if is_glue:

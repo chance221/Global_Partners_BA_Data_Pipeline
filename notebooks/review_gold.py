@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from python_scripts.common.config_loader import load_config
 from python_scripts.common.models.config_models import AppConfig
@@ -172,6 +173,79 @@ def as_of(spark: SparkSession, config: AppConfig, layer: str, table: str,
 def sql(spark: SparkSession, query: str, limit: int = 200) -> pd.DataFrame:
     """Run any query, capped. Identifiers look like `iceberg.gold.<table>`."""
     return spark.sql(query).limit(limit).toPandas()
+
+
+# --- silver ----------------------------------------------------------------
+
+def silver_overview(spark: SparkSession, config: AppConfig) -> pd.DataFrame:
+    """One row per silver table: volume, batch coverage and key uniqueness.
+
+    The query to run after a load. Driven by the table contracts in config
+    rather than hardcoded column lists, so adding a dataset to `tables:` adds
+    it here with no change.
+
+    `rows` vs `distinct_keys` is the interesting column pair, and what it means
+    depends on the write strategy:
+
+      merge          they must be equal. Iceberg refuses a MERGE where two
+                     source rows match one target row, so a gap means rows got
+                     quarantined rather than merged.
+      delete_insert  rows may exceed distinct_keys legitimately -- order_item_options
+                     has no unique key of its own, which is why it is scoped by
+                     ORDER_ID instead.
+      replace        equal, since the whole table is rewritten each run.
+    """
+    rows = []
+
+    for name, contract in config.tables.items():
+        identifier = fqn(config, "silver", name)
+        try:
+            df = spark.table(identifier)
+        except Exception as exc:
+            rows.append({"table": name, "error": type(exc).__name__})
+            continue
+
+        keys = [k.lower() for k in contract.business_keys]
+        aggs = [
+            F.count(F.lit(1)).alias("rows"),
+            F.countDistinct(*[F.col(k) for k in keys]).alias("distinct_keys"),
+            F.countDistinct("batch_date").alias("batches"),
+            F.max("batch_date").alias("last_batch"),
+        ]
+
+        # Only order_items carries event time; the others have no such column.
+        event_col = "creation_time_utc"
+        if event_col in df.columns:
+            aggs += [F.min(F.to_date(F.col(event_col))).alias("first_event"),
+                     F.max(F.to_date(F.col(event_col))).alias("last_event")]
+
+        record = df.agg(*aggs).collect()[0].asDict()
+        record.update({"table": name, "write": contract.silver_write,
+                       "keys": ",".join(keys)})
+        rows.append(record)
+
+    frame = pd.DataFrame(rows)
+    front = [c for c in ("table", "write", "rows", "distinct_keys", "batches",
+                         "last_batch", "first_event", "last_event", "keys")
+             if c in frame.columns]
+    return frame[front + [c for c in frame.columns if c not in front]]
+
+
+def orphan_options(spark: SparkSession, config: AppConfig) -> pd.DataFrame:
+    """Option rows whose parent line item is missing from order_items.
+
+    Should be empty. The extract widens to whole parents for delete_insert
+    tables, so an option can only arrive with its siblings -- a non-empty
+    result means that widening failed or the two tables were loaded for
+    different periods.
+    """
+    return spark.sql(
+        "SELECT o.order_id, o.lineitem_id, count(*) AS option_rows "
+        f"FROM {fqn(config, 'silver', 'order_item_options')} o "
+        f"LEFT ANTI JOIN {fqn(config, 'silver', 'order_items')} i "
+        "       ON i.order_id = o.order_id AND i.lineitem_id = o.lineitem_id "
+        "GROUP BY o.order_id, o.lineitem_id"
+    ).limit(50).toPandas()
 
 
 # --- the measures the dashboard needs -------------------------------------

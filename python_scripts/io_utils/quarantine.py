@@ -4,15 +4,8 @@ A rejected row is written to the quarantine layer with its ORIGINAL values and
 a reason, never a converted or partially-transformed copy -- the point is for a
 human to see what the source actually contained.
 
-Reasons are built as nullable string columns: null means "this check passed".
-`concat_ws` skips nulls, so joining them yields "" for a clean row and a
-semicolon-separated list for a bad one. That lets every check for a table be
-evaluated in one pass, and a row carrying several problems reports all of them
-rather than only the first.
-
 Quarantine is always written date-partitioned with `overwrite`, so re-running a
-batch replaces that batch's rejects instead of appending duplicates -- the same
-idempotence the raw and silver layers rely on.
+batch replaces that batch's rejects instead of appending duplicates.
 """
 
 from __future__ import annotations
