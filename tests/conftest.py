@@ -132,6 +132,11 @@ DIM_DEFAULTS = {
     "date_key": "CAST('2020-04-21' AS date)",
     "year": "CAST(2020 AS smallint)",
     "month": "CAST(4 AS smallint)",
+    # 2020-04-21 is a Tuesday in ISO week 17. Kept consistent with
+    # date_key because tests override the date and would otherwise
+    # silently carry a weekday that contradicts it.
+    "week": "CAST(17 AS smallint)",
+    "day_of_week": "'Tuesday'",
     "is_weekend": "false",
     "is_holiday": "false",
     # Cast, not a bare NULL: an untyped NULL literal is Spark's `void` type,

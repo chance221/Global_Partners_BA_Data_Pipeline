@@ -46,6 +46,8 @@ tables:
       date_key: date
       year: smallint
       month: smallint
+      week: smallint
+      day_of_week: string
       is_weekend: boolean
       is_holiday: boolean
       holiday_name: string
