@@ -144,3 +144,88 @@ gold:
       spend_last90d: decimal(18,2)
       vip_spend_cut: decimal(18,2)
       anchor_date: date
+
+  # Weekly, monthly and seasonal grains in one table, told apart by
+  # period_type, because weeks do not nest inside months: 39 of 201 weeks here
+  # straddle a month boundary, so monthly rows cannot be summed from weekly
+  # ones. Full rebuild -- a batch holding part of a week would publish a
+  # partial weekly row. Unpartitioned: ~10k rows at this volume.
+  category_period_sales:
+    depends_on: [order_items, date_dim]
+    grain_keys: [period_type, period_start, item_category]
+    write: replace
+    output_columns:
+      period_type: string
+      period_start: date
+      period_end: date
+      item_category: string
+      season: string
+      season_year: int
+      total_orders: bigint
+      total_order_items: bigint
+      total_sales: decimal(18,2)
+      avg_sales_per_order: decimal(18,2)
+      avg_order_items: decimal(10,2)
+      avg_revenue_per_day: decimal(18,2)
+      avg_orders_per_week: decimal(10,2)
+      avg_orders_per_month: decimal(10,2)
+      period_days: int
+      days_with_sales: int
+      holiday_days: int
+      weekend_days: int
+      is_holiday_week: boolean
+
+  # Per holiday per category, with an ordinary-day baseline alongside so lift
+  # is a division the consumer does. Joins date_dim INNER on purpose: a day
+  # with no calendar row cannot be called ordinary without folding real
+  # holidays into the baseline.
+  category_holiday_sales:
+    depends_on: [order_items, date_dim]
+    grain_keys: [holiday_name, item_category]
+    write: replace
+    output_columns:
+      holiday_name: string
+      item_category: string
+      holiday_days: int
+      ordinary_days: int
+      total_orders: bigint
+      total_order_items: bigint
+      total_sales: decimal(18,2)
+      avg_sales_per_order: decimal(18,2)
+      avg_order_items: decimal(10,2)
+      avg_revenue_per_day: decimal(18,2)
+      ordinary_avg_revenue_per_day: decimal(18,2)
+
+  # Order profile by loyalty membership state, five rows that DELIBERATELY
+  # OVERLAP: a switcher's flagged order is counted in three of them. They are
+  # five separate answers, not a partition, so summing total_revenue over this
+  # table reports several times the business. Full rebuild -- a slice holding
+  # only a customer's flagged orders would file a switcher as a member
+  # throughout. Five rows, so unpartitioned.
+  #
+  # "All members" against "Never members" is a LEVEL difference and is
+  # confounded by who chooses to enrol. "Observed in both states", Pre-member
+  # against Member, is a CHANGE within the same customers and is not. Carrying
+  # both is what lets the two be told apart.
+  #
+  # No per-28-day rate here on purpose: every measure is already a ratio per
+  # order, so none of them needs normalising for how long a customer was
+  # observed.
+  loyalty_order_profile:
+    depends_on: [order_items]
+    grain_keys: [population, membership_state]
+    write: replace
+    output_columns:
+      population: string
+      membership_state: string
+      customers: bigint
+      orders: bigint
+      total_revenue: decimal(18,2)
+      avg_order_value: decimal(10,2)
+      # Beside the mean because one large order moves a mean; the two
+      # disagreeing is a finding, not noise.
+      median_order_value: decimal(10,2)
+      # Both readings of "number of items", because they move independently:
+      # a two-for-one offer raises units without touching line items.
+      avg_line_items_per_order: decimal(10,2)
+      avg_units_per_order: decimal(10,2)

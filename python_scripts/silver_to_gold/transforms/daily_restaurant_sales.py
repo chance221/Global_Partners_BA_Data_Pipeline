@@ -10,9 +10,6 @@ from pyspark.sql import functions as F
 def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
     """
     Revenue and volume per restaurant per day.
-
-    Each orders total value is calculated using the item_price which includes
-    all quantities and dates for that specific order 
     """
     items = inputs["order_items"]
 
