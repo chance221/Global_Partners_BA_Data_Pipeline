@@ -8,6 +8,11 @@ from datetime import datetime
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
+# Imported rather than redeclared, so the two category tables cannot disagree
+from python_scripts.silver_to_gold.transforms.category_period_sales import (
+    NON_CATEGORIES, category_materiality,
+)
+
 OBSERVED_SUFFIX = " Observed$"
 
 
@@ -20,7 +25,15 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
     items = inputs["order_items"]
     calendar = inputs["date_dim"]
 
-    daily = items.withColumn("sales_date", F.to_date(F.col("creation_time_utc")))
+    # Coalesced for the same reason as in category_period_sales: `~NULL` is
+    # NULL and a filter drops it, so a missing category would lose rows.
+    is_non_category = F.coalesce(
+        F.col("item_category").isin(*NON_CATEGORIES), F.lit(False))
+
+    daily = (items
+             .filter(~is_non_category)
+             .withColumn("sales_date",
+                         F.to_date(F.col("creation_time_utc"))))
 
     span = daily.agg(F.min("sales_date"), F.max("sales_date")).collect()[0]
     span_start, span_end = span[0], span[1]
@@ -83,6 +96,11 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
         per_holiday
         .join(holiday_days, on="holiday_name", how="left")
         .join(baseline.drop("_ordinary_orders"), on="item_category", how="left")
+        # The same all-time share category_period_sales publishes, so the two
+        # tables cannot disagree about what is material. It is a property of
+        # the category, not of the holiday, so it repeats down each category's
+        # rows -- and is computed from `daily`, every day, not just holidays.
+        .join(category_materiality(daily), on="item_category", how="left")
         .withColumn("ordinary_days", F.lit(ordinary_days).cast("int"))
         .withColumn("avg_sales_per_order",
                     (F.col("total_sales") / F.col("total_orders"))

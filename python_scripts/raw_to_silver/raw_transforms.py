@@ -71,4 +71,26 @@ def apply_dynamic_transform(df: DataFrame, tableConfig: TableConfig, batch_date:
 
   final_df = df.select(select_exprs)
 
+  # Value-level cleaning, after the casts so column names are already
+  # lowercased. Rules are applied in the order config lists them, each seeing
+  # the output of the one before it -- which is why URL excision is listed
+  # first for item_category: a repaired "Kid's" must not then match ^Kids$.
+  for column, rules in tableConfig.silver_cleaners.items():
+    col_lower = column.lower()
+
+    # Unreachable via config validation, which rejects a cleaner on a column
+    # absent from required_columns. Kept because that check is skipped when
+    # required_columns is empty, and a silent no-op is the failure mode.
+    if col_lower not in final_df.columns:
+      raise ValueError(
+          f"silver_cleaners names {column!r}, which is not carried into "
+          f"silver; carried: {sorted(final_df.columns)}"
+      )
+
+    cleaned = F.col(col_lower)
+    for pattern, replacement in rules:
+      cleaned = F.regexp_replace(cleaned, pattern, replacement)
+
+    final_df = final_df.withColumn(col_lower, cleaned)
+
   return final_df

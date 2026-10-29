@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from functools import reduce
 
-from pyspark.sql import Column, DataFrame
+from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
 
 # Normalising on days rather than on counted calendar weeks or months keeps the
@@ -25,6 +25,75 @@ DAYS_PER_MONTH = 30.4375
 WINTER_MONTHS = (12, 1, 2)
 SPRING_MONTHS = (3, 4, 5)
 SUMMER_MONTHS = (6, 7, 8)
+
+# Values the source stores in item_category that are not menu categories:
+# `Test Items` is test data that reached production, `Most Popular` is a
+# merchandising tag. Excluded from category analysis, because a category chart
+# with a row that is not a category is wrong at the source rather than in the
+# dashboard -- gold is what gets queried.
+#
+# The cost is a deliberate reconciliation gap: 10 order lines and $35.57 of
+# $1,778,729.14 (0.002%) do not appear in this table or in
+# category_holiday_sales, so neither ties exactly to daily_restaurant_sales.
+# Textual corruption in this column is repaired upstream instead, by
+# silver_cleaners in config -- these two are judgements about scope, not
+# repairs, which is why they live here.
+NON_CATEGORIES = ("Test Items", "Most Popular")
+
+# A category below this share of all-time sales is immaterial to the business.
+# 1% is not arbitrary: it keeps 8 categories, which is also the ceiling on
+# distinguishable categorical colours, and leaves 4.08% of sales in the tail.
+# The next meaningful cut is 5 categories -- nothing at all sits between
+# 1.67% and 7.75%, so every threshold from 2% to 5% gives the same answer, and
+# that one discards Meal Prep Kits, Specialty Coffee Beverages and Drip
+# Coffee, which are real lines of business rather than noise.
+MATERIALITY_THRESHOLD_PCT = 1.0
+
+
+def category_materiality(daily: DataFrame) -> DataFrame:
+    """Each category's share of ALL-TIME sales, and whether it clears the bar.
+
+    One row per category. Public because category_holiday_sales imports it:
+    the two tables must not disagree about what is material, for the same
+    reason they share NON_CATEGORIES.
+
+    The share is deliberately global rather than per period. Measured per
+    period it flickers -- 15 categories cross 1% in some months and not
+    others, and `Burgers & Sandwiches` ranges from 0.15% to 73.42% across the
+    five months it appears in -- so a per-period flag would move a category in
+    and out of the tail as the reader changed the date range. Safe to compute
+    here because both category tables are write: replace, so the transform
+    always sees the whole of silver.
+
+    Both columns are published, not just the boolean: a flag throws away the
+    number, and a consumer may want to re-threshold without recomputing.
+    """
+    totals = (daily
+              .groupBy("item_category")
+              .agg(F.sum("item_price").alias("_category_sales")))
+
+    # Unpartitioned on purpose -- the grand total is over every category, and
+    # this frame is one row per category, a few dozen rows. Spark's
+    # single-partition warning is the right trade here.
+    grand_total = F.sum("_category_sales").over(Window.partitionBy())
+
+    # TRY_DIVIDE and not `/`: ANSI mode is on in Spark 4, and a batch with no
+    # sales at all would otherwise raise instead of returning null.
+    share = F.try_divide(F.lit(100) * F.col("_category_sales"), grand_total)
+
+    return (totals
+            .withColumn("_share", share)
+            .withColumn("pct_of_total_sales",
+                        F.col("_share").cast("decimal(7,4)"))
+            # Coalesced so a null share on a degenerate batch reads as "not
+            # material" rather than as null, which would be a third state no
+            # consumer expects from a boolean.
+            .withColumn("is_material",
+                        F.coalesce(
+                            F.col("_share")
+                            >= F.lit(MATERIALITY_THRESHOLD_PCT),
+                            F.lit(False)))
+            .select("item_category", "pct_of_total_sales", "is_material"))
 
 
 def _season(date_col: Column) -> Column:
@@ -85,7 +154,16 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
     items = inputs["order_items"]
     calendar = inputs["date_dim"]
 
-    daily = items.withColumn("sales_date", F.to_date(F.col("creation_time_utc")))
+    # Coalesced because isin returns NULL for a NULL category and `~NULL` is
+    # NULL, which a filter drops -- so a batch with a missing category would
+    # lose rows silently. There are none today; order_items is incremental.
+    is_non_category = F.coalesce(
+        F.col("item_category").isin(*NON_CATEGORIES), F.lit(False))
+
+    daily = (items
+             .filter(~is_non_category)
+             .withColumn("sales_date",
+                         F.to_date(F.col("creation_time_utc"))))
 
     span = daily.agg(F.min("sales_date"), F.max("sales_date")).collect()[0]
     span_start, span_end = span[0], span[1]
@@ -122,6 +200,10 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
     return (
         sales
         .join(holidays, on=["period_type", "period_start"], how="left")
+        # Left, though every category here is necessarily in `materiality` --
+        # both derive from `daily`. An inner join would hide a future bug by
+        # silently dropping period rows instead of showing a null share.
+        .join(category_materiality(daily), on="item_category", how="left")
         .withColumn("period_days", period_days)
         .withColumn("season", _season(F.col("period_start")))
         .withColumn("season_year", _season_year(F.col("period_start")))

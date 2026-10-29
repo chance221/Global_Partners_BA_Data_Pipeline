@@ -48,6 +48,104 @@ def test_creation_applies_the_configured_casts(spark, cfg, item_rows, batch_date
     assert schema["batch_date"] == "date"
 
 
+# --- silver_cleaners -----------------------------------------------------
+
+# Every value is a real one from silver.order_items, kept verbatim so the
+# patterns are tested against the corruption they were written for rather
+# than against a tidied-up version of it.
+BBQ_URL = ("'BBQ Plateshttps://order.pxsweb.com/admin/restaurants/"
+           "622289bc6863d23d066d56ff/menuitems#'")
+DRIP_URL = ("'Drip Chttps://www.opendining.net/admin/restaurants/"
+            "62f2ce9824813746ce6f5140/menuitems#offee'")
+KIDS_URL = ("'Kid''shttps://www.opendining.net/admin/restaurants/"
+            "6054db3295b70198148b456d/menuitems#'")
+
+
+def categories(spark, cfg, batch_date, fqn, df):
+    """Transform and write a batch, then read item_category back out."""
+    apply(spark, cfg, batch_date, "order_items", df)
+    return [r["item_category"]
+            for r in spark.table(fqn).select("item_category").collect()]
+
+
+def test_cleaner_excises_an_injected_url_mid_word(spark, cfg, item_rows,
+                                                  batch_date, silver_table):
+    """The regression that justifies the whole mechanism.
+
+    "Drip C<url>offee" has the URL pasted INSIDE the word. Truncating at
+    https yields "Drip C" and invents a category that never existed; the
+    pattern has to excise the URL and rejoin what is left.
+    """
+    fqn = silver_table("order_items")
+    df = item_rows({"LINEITEM_ID": "'1'", "ITEM_CATEGORY": DRIP_URL})
+
+    assert categories(spark, cfg, batch_date, fqn, df) == ["Drip Coffee"]
+
+
+def test_cleaner_strips_trailing_urls(spark, cfg, item_rows, batch_date,
+                                      silver_table):
+    """A URL at the end leaves the real category behind it."""
+    fqn = silver_table("order_items")
+    df = item_rows(
+        {"LINEITEM_ID": "'1'", "ITEM_CATEGORY": BBQ_URL},
+        {"LINEITEM_ID": "'2'", "ITEM_CATEGORY": KIDS_URL},
+    )
+
+    assert sorted(categories(spark, cfg, batch_date, fqn, df)) == [
+        "BBQ Plates", "Kid's",
+    ]
+
+
+def test_cleaner_repairs_mangled_names(spark, cfg, item_rows, batch_date,
+                                       silver_table):
+    """Stray keystrokes that split one real category into two."""
+    fqn = silver_table("order_items")
+    df = item_rows(
+        {"LINEITEM_ID": "'1'", "ITEM_CATEGORY": "'Bowls0'"},
+        {"LINEITEM_ID": "'2'", "ITEM_CATEGORY": "'Sandwiches`1'"},
+        {"LINEITEM_ID": "'3'", "ITEM_CATEGORY": "'Sqalads'"},
+        {"LINEITEM_ID": "'4'", "ITEM_CATEGORY": "'Kids'"},
+    )
+
+    assert sorted(categories(spark, cfg, batch_date, fqn, df)) == [
+        "Bowls", "Kid's", "Salads", "Sandwiches",
+    ]
+
+
+def test_url_repair_does_not_then_match_a_later_rule(spark, cfg, item_rows,
+                                                     batch_date, silver_table):
+    """Rule ORDER is load-bearing, and this is where it would break.
+
+    URL excision turns the Kid's value into "Kid's", which must NOT then be
+    caught by the ^Kids$ remap. Reversing the two rules in config would still
+    pass every other test here.
+    """
+    fqn = silver_table("order_items")
+    df = item_rows({"LINEITEM_ID": "'1'", "ITEM_CATEGORY": KIDS_URL})
+
+    assert categories(spark, cfg, batch_date, fqn, df) == ["Kid's"]
+
+
+def test_cleaner_leaves_clean_categories_untouched(spark, cfg, item_rows,
+                                                   batch_date, silver_table):
+    """The anchors matter: a real name must not be partially rewritten.
+
+    "Hot Bowls" contains "Bowls" and "Pre-Made Sandwiches" contains
+    "Sandwiches", so an unanchored pattern would corrupt both.
+    """
+    fqn = silver_table("order_items")
+    df = item_rows(
+        {"LINEITEM_ID": "'1'", "ITEM_CATEGORY": "'Hot Bowls'"},
+        {"LINEITEM_ID": "'2'", "ITEM_CATEGORY": "'Pre-Made Sandwiches'"},
+        {"LINEITEM_ID": "'3'", "ITEM_CATEGORY": "'Breakfast'"},
+        {"LINEITEM_ID": "'4'", "ITEM_CATEGORY": "'Kid''s'"},
+    )
+
+    assert sorted(categories(spark, cfg, batch_date, fqn, df)) == [
+        "Breakfast", "Hot Bowls", "Kid's", "Pre-Made Sandwiches",
+    ]
+
+
 def test_creation_applies_the_partition_transform(spark, cfg, item_rows,
                                                   batch_date, silver_table):
     """months(creation_time_utc) lets a merge prune to one month's files.

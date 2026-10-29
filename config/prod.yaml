@@ -74,6 +74,25 @@ tables:
     silver_transforms:
       creation_time_utc: timestamp
       item_price: decimal(10,2)
+    # Category VALUES arrive textually broken from the source POS admin tools.
+    # silver_transforms above fixes types; this fixes content. Applied in the
+    # order listed, each pattern seeing the previous one's output.
+    silver_cleaners:
+      item_category:
+        # An admin-console URL pasted into the category field -- sometimes
+        # MID-WORD: "Drip C<url>offee". Excised and rejoined, NOT truncated:
+        # cutting at https would yield "Drip C" and invent a 46th category.
+        # Non-greedy to the first '#', which is where every one of these ends.
+        - ['https?://[^#]*#', '']
+        # Stray keystrokes that split one real category in two. Anchored, so a
+        # legitimate name that merely contains the text is left alone.
+        - ['^Bowls0$', 'Bowls']
+        - ['^Sandwiches`1$', 'Sandwiches']
+        - ['^Sqalads$', 'Salads']
+        # One category spelled two ways by different restaurants. This is a
+        # judgement call, not a repair -- the variants above are unambiguous
+        # corruption, this one merges 1,158 rows into a different label.
+        - ["^Kids$", "Kid's"]
     watermark_column: inserted_at
     silver_write: merge
     # months, not days: at ~150 rows per day, days() produced 1336 partitions
@@ -196,6 +215,8 @@ gold:
       holiday_days: int
       weekend_days: int
       is_holiday_week: boolean
+      pct_of_total_sales: decimal(7,4)
+      is_material: boolean
 
   # Per holiday per category, with an ordinary-day baseline alongside so lift
   # is a division the consumer does. Joins date_dim INNER on purpose: a day
@@ -217,6 +238,8 @@ gold:
       avg_order_items: decimal(10,2)
       avg_revenue_per_day: decimal(18,2)
       ordinary_avg_revenue_per_day: decimal(18,2)
+      pct_of_total_sales: decimal(7,4)
+      is_material: boolean
 
   # Order profile by loyalty membership state, five rows that DELIBERATELY
   # OVERLAP: a switcher's flagged order is counted in three of them. They are

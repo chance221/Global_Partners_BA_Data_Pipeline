@@ -120,7 +120,7 @@ Two thresholds are calibrated from the data rather than hardcoded:
 | ------------- | ---------------------- | --------- | --------- | ------------------------------------------- |
 | Core          | VIP, Loyal             | 594       | $65,373   | who is carrying revenue right now           |
 | Developing    | Promising, Re-engaging | 834       | $19,668   | who is engaged but has not become habitual  |
-| Growth        | New                    | 455       | $8,938    | who just arrived and still needs onboarding |
+| New Growth    | New                    | 455       | $8,938    | who just arrived and still needs onboarding |
 | Churn Risk    | Slipping, Lapsing      | 1,915     | $43,099   | who we are losing, and how much is at stake |
 | Dormant       | Dormant                | 16,376    | $0        | the reactivation pool                       |
 

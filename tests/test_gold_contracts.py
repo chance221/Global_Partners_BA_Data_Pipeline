@@ -142,6 +142,106 @@ def test_grain_is_never_null(spark, cfg, batch_date, item_rows, build_inputs,
     assert out.where(predicate).count() == 0, f"{table} emits a null {grain}"
 
 
+# --- category materiality -------------------------------------------------
+
+# A category's share is of ALL-TIME sales, so these build a batch whose
+# category split is known and check the arithmetic rather than a magic number.
+MATERIALITY_TABLES = ["category_period_sales", "category_holiday_sales"]
+
+
+@pytest.fixture
+def split_categories(item_rows):
+    """Three categories at 96 / 3 / 1 percent of sales, on one day.
+
+    Chosen so exactly one category sits above the 1% bar and one sits exactly
+    ON it -- the boundary is where an off-by-one in the comparison shows up.
+    """
+    return item_rows(
+        {"LINEITEM_ID": "'1'", "ITEM_CATEGORY": "'Big'",
+         "ITEM_PRICE": "'96.00'"},
+        {"LINEITEM_ID": "'2'", "ITEM_CATEGORY": "'Small'",
+         "ITEM_PRICE": "'3.00'"},
+        {"LINEITEM_ID": "'3'", "ITEM_CATEGORY": "'Boundary'",
+         "ITEM_PRICE": "'1.00'"},
+    )
+
+
+@pytest.mark.parametrize("table", MATERIALITY_TABLES)
+def test_materiality_share_is_all_time_not_per_period(spark, cfg, batch_date,
+                                                      build_inputs,
+                                                      split_categories, table):
+    """One share per category, repeated on every row that category has.
+
+    This is the property that keeps a category from flickering in and out of
+    the tail as a reader changes the date range, so it is asserted directly
+    rather than inferred from a single row.
+    """
+    out = TRANSFORMS[table](build_inputs(table, split_categories), batch_date)
+
+    shares = {r["item_category"]: float(r["pct_of_total_sales"])
+              for r in out.select("item_category", "pct_of_total_sales")
+                          .distinct().collect()}
+
+    assert shares == {"Big": 96.0, "Small": 3.0, "Boundary": 1.0}
+
+
+@pytest.mark.parametrize("table", MATERIALITY_TABLES)
+def test_is_material_includes_the_threshold_itself(spark, cfg, batch_date,
+                                                   build_inputs,
+                                                   split_categories, table):
+    """The comparison is >=, so a category exactly at 1% is material."""
+    out = TRANSFORMS[table](build_inputs(table, split_categories), batch_date)
+
+    flags = {r["item_category"]: r["is_material"]
+             for r in out.select("item_category", "is_material")
+                         .distinct().collect()}
+
+    assert flags == {"Big": True, "Small": True, "Boundary": True}
+
+
+@pytest.mark.parametrize("table", MATERIALITY_TABLES)
+def test_is_material_is_false_below_the_threshold(spark, cfg, batch_date,
+                                                  build_inputs, item_rows,
+                                                  table):
+    """0.5% of sales is immaterial, and reads False rather than null."""
+    df = item_rows(
+        {"LINEITEM_ID": "'1'", "ITEM_CATEGORY": "'Big'",
+         "ITEM_PRICE": "'199.00'"},
+        {"LINEITEM_ID": "'2'", "ITEM_CATEGORY": "'Tiny'",
+         "ITEM_PRICE": "'1.00'"},
+    )
+    out = TRANSFORMS[table](build_inputs(table, df), batch_date)
+
+    flags = {r["item_category"]: r["is_material"]
+             for r in out.select("item_category", "is_material")
+                         .distinct().collect()}
+
+    assert flags == {"Big": True, "Tiny": False}
+
+
+@pytest.mark.parametrize("table", MATERIALITY_TABLES)
+def test_non_categories_are_excluded(spark, cfg, batch_date, build_inputs,
+                                     item_rows, table):
+    """`Test Items` and `Most Popular` are not menu categories.
+
+    Excluded from the rows AND from the denominator -- if they still counted
+    toward total sales, every real category's share would be understated.
+    """
+    df = item_rows(
+        {"LINEITEM_ID": "'1'", "ITEM_CATEGORY": "'Real'",
+         "ITEM_PRICE": "'50.00'"},
+        {"LINEITEM_ID": "'2'", "ITEM_CATEGORY": "'Test Items'",
+         "ITEM_PRICE": "'25.00'"},
+        {"LINEITEM_ID": "'3'", "ITEM_CATEGORY": "'Most Popular'",
+         "ITEM_PRICE": "'25.00'"},
+    )
+    out = TRANSFORMS[table](build_inputs(table, df), batch_date)
+    rows = out.select("item_category", "pct_of_total_sales").distinct().collect()
+
+    assert [r["item_category"] for r in rows] == ["Real"]
+    assert float(rows[0]["pct_of_total_sales"]) == 100.0
+
+
 # --- the published contract -----------------------------------------------
 
 @pytest.mark.parametrize("table", GOLD_TABLES)

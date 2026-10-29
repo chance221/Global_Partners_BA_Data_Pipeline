@@ -139,7 +139,7 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
                      .otherwise("Lapsing"))
         .withColumn("segment_group",
                     F.when(F.col("segment").isin("VIP", "Loyal"), "Core")
-                     .when(F.col("segment") == "New", "Growth")
+                     .when(F.col("segment") == "New", "New Growth")
                      .when(F.col("segment").isin("Promising", "Re-engaging"),
                            "Developing")
                      .when(F.col("segment").isin("Slipping", "Lapsing"), "Churn Risk")

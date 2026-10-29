@@ -39,3 +39,7 @@ get-job.json
 # belongs in infra/glue/. Write dumps here and they stay local.
 *.getjob.json
 *.raw.json
+
+
+# streamlit secrets
+.streamlit/secrets.toml

@@ -223,7 +223,7 @@ def _segments(per_order: DataFrame, anchor: date, vip_cut: Decimal) -> DataFrame
                      .otherwise("Lapsing")) # Customers are not high spenders, nor frequent users and they have not ordered with us in the last 30 days
         .withColumn("segment_group",
                     F.when(F.col("segment").isin("VIP", "Loyal"), "Core") #Categorizes the segments into segment groups and determins if user is a churn risk 
-                     .when(F.col("segment") == "New", "Growth")
+                     .when(F.col("segment") == "New", "New Growth")
                      .when(F.col("segment").isin("Promising", "Re-engaging"),
                            "Developing")
                      .when(F.col("segment").isin("Slipping", "Lapsing"),

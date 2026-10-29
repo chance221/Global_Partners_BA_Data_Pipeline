@@ -32,6 +32,11 @@ class TableConfig:
         business_keys: columns identifying a row for the SCD1 merge.
         required_columns: column name -> expected source type. A contract
             subset, not the full schema; unlisted columns are allowed.
+        silver_cleaners: column name -> ordered [pattern, replacement] regex
+            pairs applied to that column's VALUES. silver_transforms fixes a
+            column's type; this fixes its content, for source data that is
+            structurally valid but textually wrong. Order matters -- each
+            pattern sees the output of the one before it.
     """
 
     source_table: str
@@ -39,6 +44,7 @@ class TableConfig:
     business_keys: list[str]
     required_columns: dict[str, str] = field(default_factory=dict)
     silver_transforms: dict [str, str] = field(default_factory=dict)
+    silver_cleaners: dict[str, list[list[str]]] = field(default_factory=dict)
     silver_write: str = "merge"
     silver_scope_keys: list[str] = field(default_factory=list)
     silver_partition_by: list[str] = field(default_factory=list)
@@ -75,6 +81,28 @@ class TableConfig:
             raise ValueError(
                 "load_type 'incremental' requires watermark_column"
             )
+
+        # A malformed rule would otherwise surface as a Spark analysis error
+        # deep in the job, naming a column but not the config that broke it.
+        for column, rules in self.silver_cleaners.items():
+            for rule in rules:
+                if len(rule) != 2:
+                    raise ValueError(
+                        f"silver_cleaners[{column!r}] rule {rule!r} must be "
+                        f"[pattern, replacement], got {len(rule)} element(s)"
+                    )
+
+        # Cleaning a column that is not carried into silver is a no-op the
+        # author would never see, so it fails here instead.
+        if self.required_columns:
+            uncarried = {c for c in self.silver_cleaners
+                         if c.lower() not in {r.lower()
+                                              for r in self.required_columns}}
+            if uncarried:
+                raise ValueError(
+                    f"silver_cleaners names columns absent from "
+                    f"required_columns: {sorted(uncarried)}"
+                )
 
         if not self.business_keys:
             raise ValueError("business_keys must not be empty")
