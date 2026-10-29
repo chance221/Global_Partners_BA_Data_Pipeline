@@ -22,8 +22,8 @@ from pyspark.sql import DataFrame
 
 from python_scripts.silver_to_gold.transforms import (
     category_holiday_sales, category_period_sales, customer_lifetime_value,
-    customer_rfm, daily_restaurant_sales, loyalty_order_profile,
-    restaurant_revenue_rank,
+    customer_rfm, daily_restaurant_sales, loyalty_era_profile,
+    loyalty_order_profile, restaurant_revenue_rank,
 )
 
 Transform = Callable[[dict[str, DataFrame], datetime], DataFrame]
@@ -36,6 +36,7 @@ TRANSFORMS: dict[str, Transform] = {
     "category_period_sales": category_period_sales.build,
     "category_holiday_sales": category_holiday_sales.build,
     "loyalty_order_profile": loyalty_order_profile.build,
+    "loyalty_era_profile": loyalty_era_profile.build,
 }
 
 

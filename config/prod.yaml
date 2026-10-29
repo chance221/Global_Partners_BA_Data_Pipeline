@@ -251,3 +251,73 @@ gold:
       # a two-for-one offer raises units without touching line items.
       avg_line_items_per_order: decimal(10,2)
       avg_units_per_order: decimal(10,2)
+
+  # The business before and after the loyalty program, on EQUAL windows: the
+  # post era runs from the first flagged order to the last order in the data,
+  # and the pre era is the same number of days ending the day before. The
+  # transform derives both from order_items, so a later batch moves them
+  # together instead of leaving a hardcoded date behind.
+  #
+  # Equal lengths are not a nicety. Measured naively -- all history before
+  # 2023 against everything after -- orders per customer reads 5.47 against
+  # 4.69 and the program looks harmful. The windows were 1,070 days against
+  # 330, and orders per customer accumulates with observation time. On equal
+  # windows the same measure reads 4.29 against 4.69 and the sign flips.
+  #
+  # Rows OVERLAP, like loyalty_order_profile: every order is counted once
+  # under its segment and once under `All customers`, so summing total_revenue
+  # over this table reports twice the business. The `All customers` rows are
+  # the era totals.
+  #
+  # Full rebuild. There is no event_time_column because a slice of a batch
+  # cannot say which era it belongs to without seeing where the program
+  # started, and `replace` so a segment nobody occupies any more cannot keep a
+  # stale row. 18 rows, so unpartitioned.
+  #
+  # Descriptive, not causal: a calendar split cannot separate the program from
+  # the January-2023 reprice or from the chain's own growth.
+  # `loyalty_order_profile` is the within-person evidence.
+  loyalty_era_profile:
+    depends_on: [order_items]
+    grain_keys: [era, segment]
+    write: replace
+    output_columns:
+      era: string
+      segment: string
+      segment_group: string
+      # Published so a reader can verify the windows are equal rather than
+      # trust the comment. window_days is the era; segment_window_days is the
+      # trailing window the RFM segment is assigned from, which stays at 90
+      # because a segment is a claim about recent activity.
+      window_start: date
+      window_end: date
+      window_days: int
+      segment_window_days: int
+      customers: bigint
+      orders: bigint
+      total_revenue: decimal(18,2)
+      avg_order_value: decimal(10,2)
+      # Mean and median side by side throughout, because here they disagree
+      # and point opposite ways: median orders per customer doubles, 1 to 2,
+      # while the mean falls. The pre era carries a large mass of one-order
+      # COVID-era customers.
+      median_order_value: decimal(10,2)
+      avg_orders_per_customer: decimal(10,2)
+      median_orders_per_customer: decimal(10,2)
+      avg_spend_per_customer: decimal(10,2)
+      median_spend_per_customer: decimal(10,2)
+      # Average order value held flat across the eras (13.51 to 13.68) because
+      # these two moved in opposite directions and cancelled: baskets shrank
+      # while the menu reprice lifted the price of what was in them. Carrying
+      # both is what stops "AOV is flat" being read as "nothing happened".
+      units_per_order: decimal(10,2)
+      revenue_per_unit: decimal(10,2)
+      # Within-era shares, so the Core segments can be shown carrying a
+      # disproportionate slice of revenue without the reader doing arithmetic.
+      revenue_share_pct: decimal(5,2)
+      customer_share_pct: decimal(5,2)
+      # The frozen VIP bar, in dollars, identical in both eras. A floating
+      # percentile -- what customer_rfm uses, correctly, for a snapshot --
+      # would pin VIP at a fixed share of the base and make growth
+      # unmeasurable by construction.
+      vip_spend_cut: decimal(18,2)

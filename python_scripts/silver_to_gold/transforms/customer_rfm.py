@@ -21,13 +21,13 @@ from datetime import datetime, timedelta
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 
-ACTIVE_WINDOW_DAYS = 90
-PERIOD_DAYS = 30
+ACTIVE_WINDOW_DAYS = 90  #This is shared with loyalty era profile so if you change this you change the active lookback window for that gold table as well.
+PERIOD_DAYS = 30 # This is shared with loyalty era profile so if you change this you change the active lookback window for that gold table as well.
 
 # Measured thresholds. 
 NEW_MAX_TENURE_DAYS = 30        # first order this recent == no history yet
 REENGAGE_DORMANCY_DAYS = 180    # gap before a fresh order counts as a win-back
-LOYAL_MIN_ORDERS_90D = 4        # p80 of 90-day order count is 3, so 4+ is top fifth
+LOYAL_MIN_ORDERS_90D = 4        # 80th percentile of 90-day order count is 3, so 4+ is top fifth
 SLIPPING_MIN_ORDERS_90D = 3     # had a rhythm worth losing
 VIP_SPEND_PERCENTILE = 0.8
 
