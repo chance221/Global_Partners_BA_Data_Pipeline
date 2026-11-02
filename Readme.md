@@ -98,30 +98,41 @@ Counts are taken at the 2024-02-20 anchor and sum to 20,174 customers, every one
 
 What each segment means in practice:
 
-- **VIP** -- ordering repeatedly right now, present in an earlier period too, and in the top fifth of 90-day spend. 2.0% of customers producing 38.8% of trailing-90-day revenue, at $132.78 each. This is the group to protect.
-- **Loyal** -- frequent and current, but under the spend cut; the natural VIP feeder at $62.83 each. Worth watching: their spend declines across all three periods ($4,873 -> $4,118 -> $3,135 oldest to newest) while VIP spend grows ($15,890 -> $15,740 -> $21,617).
+- **VIP** -- ordering repeatedly right now, present in an earlier period too, and in the top fifth of 90-day spend. 1.9% of all customers -- 10.4% of the active ones -- producing 38.1% of trailing-90-day revenue, at $132.59 each. This is the group to protect.
+- **Loyal** -- frequent and current, but under the spend cut; the natural VIP feeder at $65.09 each. Worth watching: their spend declines across all three periods ($5,020 -> $4,392 -> $3,151 oldest to newest) while VIP spend grows ($15,756 -> $15,710 -> $20,641).
 - **Promising** -- current but infrequent, and with an average tenure of 422 days these are established occasional buyers, not newcomers. The name describes the opportunity, not their age.
 - **Re-engaging** -- won back after at least 180 days away, 367 on average. Fragile at 40.1%, and the second order is what decides whether the win-back actually held.
 - **New** -- first order inside the last 30 days (average tenure 15 days), no prior history to judge them on. They return only 31.8% of the time unaided, which is the whole argument for onboarding and habit-forming follow-up.
-- **Slipping** -- had a rhythm of three or more orders in the window and then went quiet inside the last 30 days. At 57.5% they still return more often than not, and at $54.98 each they are worth roughly three Lapsing customers, which makes this the highest-leverage group in the table.
-- **Lapsing** -- never built a rhythm, and now quiet. The largest at-risk pool both by headcount and by total money ($29,904) but the smallest per head ($17.85), so the honest play is cheap and broad rather than individual attention.
+- **Slipping** -- had a rhythm of three or more orders in the window and then went quiet inside the last 30 days. At 57.5% they still return more often than not, and at $54.88 each they are worth roughly three Lapsing customers, which makes this the highest-leverage group in the table.
+- **Lapsing** -- a rhythm of their own, just a slow one, and currently quiet. 1,095 customers, $21,078 in the window at $19.25 per head, and a median 45.8-day gap they are only 1.22x past. The honest play is cheap and broad rather than individual attention.
+- **Never Returned** -- exactly one order in their entire history, placed 30 to 90 days ago. 607 customers, $9,251, and the **highest average order of any segment at $15.24 on 1.82 items** -- they buy the biggest first basket and then vanish. `avg_gap_days` is NULL for all of them because there is no second order to measure a gap against.
 - **Dormant** -- no orders at all in the window. 81.2% of all customers, and 4.8% of them come back without being asked.
 
 Two thresholds are calibrated from the data rather than hardcoded:
 
-- **`vip_spend_cut`** is the 80th percentile of `spend_last90d` among **active** customers only, recomputed on every run ($47.93 at this anchor). 90-day spend is badly skewed -- median $20, mean $36.09, maximum $887.43 -- so a mean would drift with outliers and still qualify 27% of customers. It is computed over `Window.partitionBy("is_active")` because ranking across everyone would drag the cut toward zero, 81% of customers having no orders in the window at all. The value is written out as a column so a dashboard can display the threshold it used and a reviewer can audit it instead of taking it on trust.
+- **`vip_spend_cut`** is the 80th percentile of `spend_last90d` among **active** customers only, recomputed on every run ($47.92 at this anchor). 90-day spend is badly skewed -- median $20, mean $36.09, maximum $887.43 -- so a mean would drift with outliers and still qualify 27% of customers. It is computed over `Window.partitionBy("is_active")` because ranking across everyone would drag the cut toward zero, 81% of customers having no orders in the window at all. The value is written out as a column so a dashboard can display the threshold it used and a reviewer can audit it instead of taking it on trust.
 - **`orders_last90d >= 4`** for Loyal is the top fifth of the 90-day order count, whose 80th percentile among active customers is 3.
 
 ### Segment groups
 
-`segment_group` rolls the eight segments into five buckets, so a dashboard filter or a headline number can work at a level a reader can actually act on.
+`segment_group` rolls the nine segments into seven buckets, so a dashboard filter or a headline number can work at a level a reader can actually act on.
 
-| segment_group | segments               | customers | 90d spend | the question it answers                     |
-| ------------- | ---------------------- | --------- | --------- | ------------------------------------------- |
-| Core          | VIP, Loyal             | 594       | $65,373   | who is carrying revenue right now           |
-| Developing    | Promising, Re-engaging | 834       | $19,668   | who is engaged but has not become habitual  |
-| New Growth    | New                    | 455       | $8,938    | who just arrived and still needs onboarding |
-| Churn Risk    | Slipping, Lapsing      | 1,915     | $43,099   | who we are losing, and how much is at stake |
-| Dormant       | Dormant                | 16,376    | $0        | the reactivation pool                       |
+| segment_group  | segments             | customers | 90d spend | the question it answers                      |
+| -------------- | -------------------- | --------- | --------- | -------------------------------------------- |
+| Core           | VIP, Loyal           | 586       | $64,670   | who is carrying revenue right now            |
+| Infrequent     | Lapsing, Re-engaging | 1,289     | $24,182   | who buys rarely but on a rhythm of their own |
+| Developing     | Promising            | 618       | $16,186   | who is engaged but has not become habitual   |
+| Churn Risk     | Slipping             | 249       | $13,665   | who had a rhythm and broke it                |
+| Never Returned | Never Returned       | 607       | $9,251    | who ordered once and never came back         |
+| New Growth     | New                  | 443       | $8,757    | who just arrived and still needs onboarding  |
+| Dormant        | Dormant              | 16,382    | $0        | the reactivation pool                        |
 
-Churn Risk is kept as a parent over two segments rather than flattened into one label because the two groups leave for different reasons and need different treatment. **Slipping** customers had an established rhythm and broke it, so something changed recently and a reminder or a service recovery is the appropriate response. **Lapsing** customers never had a rhythm to break -- they were occasional from the start -- so broad, low-cost reactivation fits them and individual attention does not. Collapsing the two would bury 240 recoverable, high-value customers inside 1,675 low-value ones and invite the wrong spend.
+**Churn Risk holds Slipping alone**, and Lapsing sits under Infrequent instead, because the two were measured and do not behave alike. Dividing `recency_days` by each customer's own `avg_gap_days` puts Slipping at a median of **3.01x its own cadence, with 71.1% of its customers at 2x or worse**; Lapsing sits at **1.22x** -- a 61-day silence against a 45.8-day normal gap, which is close to on schedule. Lapsing customers were occasional from the start and still are, so treating them as churn treats ordinary behaviour as an emergency.
+
+Segmenting the same customers at two anchors 180 days apart confirms it from the other direction. Slipping has the **highest progression to Core of any non-Core segment (9.3%) and the lowest rate of going Dormant (57.1%)** -- it recovers better than Promising develops. That is what makes 249 customers worth individual attention at $463.95 of lifetime revenue each, while 1,289 Infrequent customers warrant broad and cheap treatment.
+
+**Re-engaging moved out of Developing** on the same evidence. Over 180 days it reaches Core **2.3%** of the time against Lapsing's **3.5%**, and goes Dormant **77.4%** of the time against Lapsing's **71.9%** -- worse on both axes than the group it now joins. With a median gap of 143.7 days, clearing the 180-day dormancy bar once is infrequency, not a trajectory, and "Developing" claimed a direction the data does not support.
+
+**Never Returned is split out of Lapsing** because a single lifetime order is not infrequency -- there is no cadence to be infrequent against, and `avg_gap_days` is NULL for every one of them. They reach Core 0.8% of the time and go Dormant 92.5%. Left inside Lapsing they hid 607 failed acquisitions at $15.24 each among 1,095 genuinely habitual-but-slow customers at $19.25 each who hold 86.1% of that pool's lifetime revenue. They are an acquisition-quality problem and they belong beside the second-order analysis, not in a retention bucket.
+
+Five of the seven groups are now one-to-one with a single segment, so `segment_group` rolls up less than it used to. It is kept because a dashboard filter and a headline number still need a level coarser than nine labels, and because the two groups that *do* roll up -- Core and Infrequent -- are the two where the member segments genuinely warrant the same treatment.

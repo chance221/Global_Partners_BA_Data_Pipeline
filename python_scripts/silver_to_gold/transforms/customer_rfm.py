@@ -136,13 +136,28 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
                      .when(F.col("orders_last_30d") >= 1, "Promising")
                      .when(F.col("orders_last90d") >= F.lit(SLIPPING_MIN_ORDERS_90D),
                            "Slipping")
+                     # A single lifetime order is not infrequency, it is a
+                     # customer who never came back. Split out because the two
+                     # behave nothing alike: measured over 180 days, 0.8% of
+                     # these reach Core against 3.5% of Lapsing.
+                     .when(F.col("total_orders") == 1, "Never Returned")
                      .otherwise("Lapsing"))
+        # Re-engaging groups with Lapsing rather than under Developing. Over
+        # 180 days it reaches Core 2.3% of the time against Lapsing's 3.5% and
+        # goes Dormant more often (77.4% vs 71.9%), so a 180-day gap cleared
+        # once is infrequency, not a trajectory. Slipping is alone in Churn
+        # Risk because it is the only segment worth intervening on: the highest
+        # Core progression of any non-Core segment, 9.3%, and the lowest
+        # Dormant rate, 57.1%.
         .withColumn("segment_group",
                     F.when(F.col("segment").isin("VIP", "Loyal"), "Core")
                      .when(F.col("segment") == "New", "New Growth")
-                     .when(F.col("segment").isin("Promising", "Re-engaging"),
-                           "Developing")
-                     .when(F.col("segment").isin("Slipping", "Lapsing"), "Churn Risk")
+                     .when(F.col("segment") == "Promising", "Developing")
+                     .when(F.col("segment") == "Slipping", "Churn Risk")
+                     .when(F.col("segment").isin("Lapsing", "Re-engaging"),
+                           "Infrequent")
+                     .when(F.col("segment") == "Never Returned",
+                           "Never Returned")
                      .otherwise("Dormant"))
         .withColumn("avg_order_value",
                     (F.col("total_revenue") / F.col("total_orders"))

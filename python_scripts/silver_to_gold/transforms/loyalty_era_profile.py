@@ -145,6 +145,7 @@ def _rfm_features(per_order: DataFrame, anchor: date) -> DataFrame:
         .agg(
             F.max("order_date").alias("last_order_date"), #Find the most recent order date
             F.min("order_date").alias("first_order_date"), # find the last order date
+            F.count(F.lit(1)).alias("total_orders"), # Lifetime orders AS OF the anchor -- `history` is already filtered to order_date <= anchor, so this is what the Never Returned branch tests
             F.sum(F.when(in_p1, 1).otherwise(0)).alias("orders_last_30d"), #sum a total of all orders in p1 (this label could be an f_string populated by a string literal of the actual anchor date but works for this example)
             F.sum(F.when(in_p2, 1).otherwise(0)).alias("orders_31_60d"), #sum a total of all orders in p2
             F.sum(F.when(in_p3, 1).otherwise(0)).alias("orders_61_90d"), #sum a total of all orders in p3
@@ -220,14 +221,17 @@ def _segments(per_order: DataFrame, anchor: date, vip_cut: Decimal) -> DataFrame
                      .when(F.col("orders_last_30d") >= 1, "Promising") #If user doesn't meet the above criteria (not new, loyal, dormant, or a vip)
                      .when(F.col("orders_last90d")
                            >= F.lit(SLIPPING_MIN_ORDERS_90D), "Slipping") #If the user has ordered with us more than the average customer in the last 90 days but hasn't ordered with us in the last 30 days then we are losing them
+                     .when(F.col("total_orders") == 1, "Never Returned") # Exactly one order in their whole history up to this anchor -- never came back, which is a different thing from coming back rarely
                      .otherwise("Lapsing")) # Customers are not high spenders, nor frequent users and they have not ordered with us in the last 30 days
         .withColumn("segment_group",
                     F.when(F.col("segment").isin("VIP", "Loyal"), "Core") #Categorizes the segments into segment groups and determins if user is a churn risk 
                      .when(F.col("segment") == "New", "New Growth")
-                     .when(F.col("segment").isin("Promising", "Re-engaging"),
-                           "Developing")
-                     .when(F.col("segment").isin("Slipping", "Lapsing"),
-                           "Churn Risk")
+                     .when(F.col("segment") == "Promising", "Developing")
+                     .when(F.col("segment") == "Slipping", "Churn Risk")
+                     .when(F.col("segment").isin("Lapsing", "Re-engaging"),
+                           "Infrequent")
+                     .when(F.col("segment") == "Never Returned",
+                           "Never Returned")
                      .otherwise("Dormant"))
         .select("user_id", "segment", "segment_group")
     )

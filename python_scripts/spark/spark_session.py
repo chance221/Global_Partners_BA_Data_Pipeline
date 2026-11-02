@@ -31,6 +31,22 @@ _BASE_PACKAGES = (
 
 _ICEBERG_AWS_BUNDLE = "org.apache.iceberg:iceberg-aws-bundle:1.11.0"
 
+# Six of the eight gold tables derive a date from a timestamp, via
+# to_date(creation_time_utc), and every one of them resolves it against this.
+#
+# Left unset, Spark takes the JVM default -- UTC on Glue, the machine's own
+# zone locally -- so identical silver produced different gold depending on
+# where the job ran. It was not hypothetical: the last order in silver is
+# 2024-02-21 02:52 UTC, which is 2024-02-20 21:52 in America/New_York, so
+# loyalty_era_profile derived a 331-day era locally and a 332-day era on Glue
+# from the same rows.
+#
+# Pinned so a local run reproduces Glue exactly, and pinned to UTC because the
+# column these transforms read is named creation_time_utc and is stored as
+# timestamptz. Set on BOTH code paths below rather than relying on Glue's
+# default already being UTC -- the point is that the two agree provably.
+SESSION_TIME_ZONE = "UTC"
+
 
 def resolve_catalog(appConfig: AppConfig | None = None) -> tuple[str, str]:
     """Decide which catalog backend to use and where its warehouse lives.
@@ -111,6 +127,9 @@ def create_spark_session(appConfig: AppConfig | None = None):
         #   --datalake-formats iceberg      jars cannot join a running JVM
         #   --conf spark.sql.extensions=... static, read at session creation
         spark = SparkSession.builder.getOrCreate()
+        # A runtime SQL conf, so it takes on a session Glue already started --
+        # unlike spark.sql.extensions above, which is read at creation.
+        spark.conf.set("spark.sql.session.timeZone", SESSION_TIME_ZONE)
         catalog_type, warehouse_path = resolve_catalog(appConfig)
         for key, value in _catalog_settings(catalog_type, warehouse_path).items():
             spark.conf.set(key, value)
@@ -127,6 +146,7 @@ def create_spark_session(appConfig: AppConfig | None = None):
         .appName("RDS-to-S3-Batch") \
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")\
+        .config("spark.sql.session.timeZone", SESSION_TIME_ZONE)\
         .config("spark.driver.memory", "4g")\
         .config("spark.sql.shuffle.partitions", "16")\
         .config("spark.sql.parquet.compression.codec", "snappy") \

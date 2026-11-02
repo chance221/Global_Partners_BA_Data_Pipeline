@@ -40,6 +40,8 @@ get-job.json
 *.getjob.json
 *.raw.json
 
+#dashboard data
+dashboard/data/*.csv
 
 # streamlit secrets
 .streamlit/secrets.toml

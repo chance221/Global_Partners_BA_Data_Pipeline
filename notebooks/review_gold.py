@@ -382,6 +382,195 @@ def output_contract(spark: SparkSession, config: AppConfig,
     return pd.DataFrame(rows)
 
 
+# --- one gold table, end to end -------------------------------------------
+
+REVIEW_SECTIONS = ("summary", "columns", "snapshots", "partitions", "sample")
+
+
+def review(spark: SparkSession, config: AppConfig, table: str,
+           layer: str = "gold", sample: int = 10,
+           profile: bool = True, show: bool = False) -> dict[str, pd.DataFrame]:
+    """Everything worth knowing about ONE named table, in five frames.
+
+    `gold_overview` gives a row per table across the whole layer; this is the
+    drill-down for when one of those rows looks wrong. Returns a dict of
+    pandas frames keyed by REVIEW_SECTIONS, so a cell can render one of them
+    (`rv["columns"]`) or all of them (`show=True`).
+
+    The sections:
+
+      summary     one row -- write strategy, declared grain, rows against
+                  distinct grain, files, bytes, snapshot count, last write.
+                  `grain_ok` must be True for every gold table: grain_keys is
+                  what makes a row unique, so a gap means the transform emits
+                  duplicates and every join against it will fan out.
+      columns     one row per column -- its real type, the type the contract
+                  declares, and whether those agree. `nulls` and
+                  `approx_distinct` come from a scan, so pass profile=False
+                  to skip them on something large.
+      snapshots   every write, oldest first. `operation` is the useful one:
+                  it is how you confirm a `replace` rewrote rather than
+                  appended.
+      partitions  rows and files per partition -- one row if unpartitioned.
+      sample      `sample` rows.
+
+    Reviewing every table is a loop over the names:
+
+        for name in rg.tables(spark, cfg, "gold")["tableName"]:
+            rv = rg.review(spark, cfg, name)
+
+    A column whose `status` reads `undeclared` is emitted by the transform but
+    not promised by `output_columns`. That is not a finding -- output_columns
+    is deliberately a SUBSET contract. `MISSING` and `WRONG TYPE` are.
+
+    Read-only, like everything in this module.
+    """
+    if sample < 0:
+        raise ValueError(f"sample must not be negative, got {sample}")
+
+    identifier = fqn(config, layer, table)
+    contract = config.gold.get(table) if layer == "gold" else None
+
+    # One failed read reported once, rather than the same traceback from each
+    # of the five sections below.
+    try:
+        df = spark.table(identifier)
+    except Exception as exc:
+        sections = {name: pd.DataFrame() for name in REVIEW_SECTIONS}
+        sections["summary"] = pd.DataFrame([{
+            "table": table, "identifier": identifier,
+            "error": f"{type(exc).__name__}: {exc}"}])
+        if show:
+            _render(table, sections)
+        return sections
+
+    sections = {
+        "summary": _review_summary(spark, df, identifier, table, contract),
+        "columns": _review_columns(df, contract, profile),
+        "snapshots": snapshots(spark, config, layer, table),
+        "partitions": partitions(spark, config, layer, table),
+        "sample": df.limit(int(sample)).toPandas() if sample else pd.DataFrame(),
+    }
+
+    if show:
+        _render(table, sections)
+    return sections
+
+
+def _review_summary(spark: SparkSession, df: DataFrame, identifier: str,
+                    table: str, contract) -> pd.DataFrame:
+    """The one-row header: volume, grain integrity, write strategy."""
+    record: dict = {"table": table, "identifier": identifier}
+
+    if contract is not None:
+        keys = [k.lower() for k in contract.grain_keys]
+        record["write"] = contract.write
+        record["grain"] = ",".join(keys) or "-"
+        record["partitioned"] = ",".join(contract.partition_by) or "-"
+    else:
+        keys = []
+        record["write"] = record["grain"] = record["partitioned"] = "-"
+
+    aggs = [F.count(F.lit(1)).alias("rows")]
+    if keys:
+        aggs.append(F.countDistinct(*[F.col(k) for k in keys])
+                     .alias("distinct_grain"))
+    if "batch_date" in df.columns:
+        aggs.append(F.max("batch_date").alias("last_batch"))
+    if "updated_at" in df.columns:
+        aggs.append(F.max("updated_at").alias("last_written"))
+    record.update(df.agg(*aggs).collect()[0].asDict())
+
+    if keys:
+        record["grain_ok"] = record["rows"] == record["distinct_grain"]
+
+    # Straight from the manifests -- neither of these scans the data.
+    meta = spark.sql(
+        "SELECT count(*) AS files, sum(file_size_in_bytes) AS bytes "
+        f"FROM {identifier}.files").collect()[0]
+    record["files"] = meta["files"] or 0
+    record["bytes"] = meta["bytes"] or 0
+
+    snaps = spark.sql(
+        "SELECT count(*) AS snapshots, max(committed_at) AS last_write "
+        f"FROM {identifier}.snapshots").collect()[0]
+    record["snapshots"] = snaps["snapshots"]
+    record["last_write"] = snaps["last_write"]
+
+    front = ["table", "write", "rows", "distinct_grain", "grain_ok",
+             "partitioned", "files", "bytes", "snapshots", "last_write",
+             "last_batch", "last_written", "grain", "identifier"]
+    frame = pd.DataFrame([record])
+    ordered = [c for c in front if c in frame.columns]
+    return frame[ordered + [c for c in frame.columns if c not in ordered]]
+
+
+def _review_columns(df: DataFrame, contract, profile: bool) -> pd.DataFrame:
+    """One row per column: real type against the declared one, plus nulls."""
+    declared = {k.lower(): v for k, v in
+                (contract.output_columns if contract else {}).items()}
+    actual = dict(df.dtypes)
+
+    counts: dict = {}
+    total = 0
+    if profile and actual:
+        # One pass covering every column, rather than a query each. approx and
+        # not exact: countDistinct per column shuffles once per column, and a
+        # review does not need an exact cardinality.
+        aggs = [F.count(F.lit(1)).alias("_total")]
+        for name in actual:
+            column = F.col(f"`{name}`")
+            aggs.append(F.sum(column.isNull().cast("long")).alias(f"_n_{name}"))
+            aggs.append(F.approx_count_distinct(column).alias(f"_d_{name}"))
+        counts = df.agg(*aggs).collect()[0].asDict()
+        total = counts["_total"]
+
+    rows = []
+    for name, dtype in actual.items():
+        want = declared.get(name)
+        record = {
+            "column": name,
+            "type": dtype,
+            "declared": want or "-",
+            "status": "undeclared" if want is None else (
+                "ok" if want == dtype else "WRONG TYPE"),
+        }
+        if counts:
+            nulls = counts.get(f"_n_{name}") or 0
+            record["nulls"] = nulls
+            record["null_pct"] = round(100.0 * nulls / total, 2) if total else None
+            record["approx_distinct"] = counts.get(f"_d_{name}")
+        rows.append(record)
+
+    # A column the contract promises but the transform stopped emitting. The
+    # one finding that walking the real columns cannot surface.
+    for name, want in declared.items():
+        if name not in actual:
+            rows.append({"column": name, "type": "-", "declared": want,
+                         "status": "MISSING"})
+
+    return pd.DataFrame(rows)
+
+
+def _render(table: str, sections: dict[str, pd.DataFrame]) -> None:
+    """Display every section, for `show=True`.
+
+    IPython is imported lazily and only here, so this module stays importable
+    from a plain script -- which is how the ad-hoc checks run it.
+    """
+    try:
+        from IPython.display import display
+    except ImportError:
+        display = print
+
+    for name, frame in sections.items():
+        print(f"{chr(10)}{'=' * 70}{chr(10)}{table} -- {name}{chr(10)}{'=' * 70}")
+        if frame.empty:
+            print("(empty)")
+        else:
+            display(frame)
+
+
 # --- loyalty --------------------------------------------------------------
 
 def loyalty_profile(spark: SparkSession, config: AppConfig) -> pd.DataFrame:
