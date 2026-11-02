@@ -22,8 +22,9 @@ from pyspark.sql import DataFrame
 
 from python_scripts.silver_to_gold.transforms import (
     category_holiday_sales, category_period_sales, customer_lifetime_value,
-    customer_rfm, daily_restaurant_sales, loyalty_era_profile,
-    loyalty_order_profile, restaurant_revenue_rank,
+    customer_rfm, customer_segment_transitions, daily_restaurant_sales,
+    loyalty_cohort_outcomes, loyalty_era_profile, loyalty_order_profile,
+    restaurant_revenue_rank,
 )
 
 Transform = Callable[[dict[str, DataFrame], datetime], DataFrame]
@@ -37,7 +38,12 @@ TRANSFORMS: dict[str, Transform] = {
     "category_holiday_sales": category_holiday_sales.build,
     "loyalty_order_profile": loyalty_order_profile.build,
     "loyalty_era_profile": loyalty_era_profile.build,
+    "customer_segment_transitions": customer_segment_transitions.build,
+    "loyalty_cohort_outcomes": loyalty_cohort_outcomes.build,
 }
+
+# `segment_history` is deliberately absent: it is the shared anchor-segmenting
+# helper the three tables above use, not a table of its own.
 
 
 def get_transform(name: str) -> Transform:

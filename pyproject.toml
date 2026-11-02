@@ -42,10 +42,18 @@ dev = [
 # Glue catalog the pipeline writes, which is why `catalog: type: glue` matters --
 # pyiceberg has no hadoop catalog implementation and cannot see those tables.
 # The [glue] extra pulls boto3; [pyarrow] is the scan-to-pandas path.
+#
+# altair is listed although streamlit already depends on it, because app.py
+# imports it directly and a dependency that is only transitive is one a future
+# streamlit release is free to drop. pyyaml because the app reads the catalog
+# settings through the same config_loader the jobs use -- without it
+# `pip install -e ".[app]"` installs cleanly and then fails on the first read.
 app = [
     "streamlit>=1.40",
     "pyiceberg[glue,pyarrow]>=0.8",
     "pandas>=2.2",
+    "altair>=5.0",
+    "pyyaml>=6.0",
 ]
 
 # Notebook review tooling. pyarrow reads S3 through its own bundled AWS SDK, so

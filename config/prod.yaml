@@ -344,3 +344,87 @@ gold:
       # would pin VIP at a fixed share of the base and make growth
       # unmeasurable by construction.
       vip_spend_cut: decimal(18,2)
+
+  # Where each segment's customers ended up 180 days later, as a share of each
+  # origin row -- so row_pct sums to 100 across every (era, seg_t0).
+  #
+  # Three eras, and the anchors differ IN KIND. Recent and Prior roll with the
+  # data, because "the last 180 days" is a rolling question. Pre-launch is
+  # anchored to the program's first flagged order, a fixed historical event, so
+  # it never moves and the before-and-after stays comparable as later batches
+  # extend the data. T0 and T1 are published per row so a reader can see which
+  # anchors produced a number instead of assuming the intended ones.
+  #
+  # `New Growth` and `Never Returned` are STRUCTURAL ZEROS in every row, not
+  # measured results: New Growth needs tenure <= 30 days, impossible for a
+  # customer who already existed at T0, and Never Returned needs a single
+  # lifetime order, which puts recency past 180 days so the Dormant branch
+  # catches them first. Kept as destinations so row_pct visibly sums to 100.
+  #
+  # Full rebuild, no event_time_column: a slice of one batch cannot say what a
+  # customer looked like 180 days before it. At most 9 x 7 x 3 rows, so
+  # unpartitioned, and `replace` so an origin nobody occupies any more cannot
+  # keep a stale row.
+  customer_segment_transitions:
+    depends_on: [order_items]
+    grain_keys: [era, seg_t0, grp_t1]
+    write: replace
+    output_columns:
+      era: string
+      # Origin is the SEGMENT and destination is the GROUP: nine destinations
+      # per row is a matrix nobody reads, but the origin has to tell Slipping
+      # from Lapsing or the table answers nothing.
+      seg_t0: string
+      grp_t1: string
+      t0: date
+      t1: date
+      transition_days: int
+      customers: bigint
+      # The row denominator, published so row_pct can be checked rather than
+      # trusted.
+      customers_at_t0: bigint
+      row_pct: decimal(5,2)
+      vip_spend_cut: decimal(18,2)
+
+  # Members against non-members over the SAME 180 days. This is what
+  # loyalty_era_profile cannot do: that table splits on calendar, so the
+  # chain's growth and the January-2023 reprice sit inside the comparison.
+  # Three tables, three confounds, read together --
+  #   loyalty_era_profile    calendar split, customer mix floats
+  #   loyalty_order_profile  within-customer split, calendar floats
+  #   this table             membership split, calendar fixed, mix floats
+  #
+  # Membership is taken AS OF T0, never from all history: reading it from all
+  # history files a customer who enrolled mid-window as a member throughout and
+  # credits the program with the period before they joined.
+  #
+  # Rows OVERLAP. Every customer is counted once under their T0 segment and
+  # once under `All customers`, so summing `customers` over this table reports
+  # twice the base. The pooled rows are published BECAUSE they mislead:
+  # members concentrate in the segments that retain well anyway, so the pooled
+  # gap is mostly composition and overstates the within-segment effect several
+  # times over. Read the per-segment rows; the pooled row is what they correct.
+  #
+  # Not causal either. Enrolment is a choice, so members differ from
+  # non-members in ways no column here captures -- a customer who signs up was
+  # likelier to return anyway. This table bounds the effect, it does not
+  # identify it.
+  loyalty_cohort_outcomes:
+    depends_on: [order_items]
+    grain_keys: [cohort, seg_t0]
+    write: replace
+    output_columns:
+      cohort: string
+      seg_t0: string
+      t0: date
+      t1: date
+      transition_days: int
+      customers: bigint
+      # Complements by construction -- a T1 group is Dormant or it is not.
+      # Both published so neither question needs arithmetic.
+      still_active_pct: decimal(5,2)
+      to_dormant_pct: decimal(5,2)
+      to_core_pct: decimal(5,2)
+      avg_orders_90d_t1: decimal(10,2)
+      avg_spend_90d_t1: decimal(10,2)
+      vip_spend_cut: decimal(18,2)

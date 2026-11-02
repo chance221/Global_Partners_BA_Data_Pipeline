@@ -1,11 +1,18 @@
 """Customer segmentation dashboard -- the 90-day RFM view, and what to do about it.
 
-Reads the CSVs that `build_data.py` materialises. Nothing here touches Spark or
-Iceberg: Streamlit reruns this whole script on every widget interaction, and a
-Spark session costs a JVM start each time.
+Reads the pipeline's own Iceberg tables live, through `warehouse.py`: PyIceberg
+against the Glue catalog, no Spark and no intermediate files. The whole read is
+about eight seconds cold and is cached for the session, so there is no build
+step to forget and nothing that can go stale behind a daily job.
+
+Every derived frame comes from ONE read of the warehouse, so the segments and
+the orders on this page cannot come from either side of a pipeline run.
 
 Run:
-    ./.venv/Scripts/python.exe -m streamlit run dashboard/app.py
+    ./.venv/Scripts/python.exe -m streamlit run dashboard/app.py --server.address 127.0.0.1
+
+`--server.address 127.0.0.1` because Streamlit otherwise binds every interface,
+which publishes the page to the network it is running on.
 
 Charting rules this file follows, because breaking them produces a chart that is
 confidently wrong rather than obviously broken:
@@ -29,13 +36,24 @@ confidently wrong rather than obviously broken:
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-DATA = Path(__file__).resolve().parent / "data"
+# The repo root, so `python_scripts` (which warehouse.py reads the catalog
+# config from) resolves whether or not the project is pip-installed. Streamlit
+# puts only this file's own directory on sys.path.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from dashboard import warehouse  # noqa: E402
+
+ENV = os.environ.get("GP_DASHBOARD_ENV", "prod")
 
 st.set_page_config(page_title="Customer Segmentation",
                    page_icon="📊", layout="wide")
@@ -72,9 +90,20 @@ def palette() -> dict[str, str]:
     return _DARK if str(base).lower() == "dark" else _LIGHT
 
 
-@st.cache_data
+@st.cache_data(ttl=900, show_spinner="Reading the warehouse...")
+def load_all() -> dict[str, pd.DataFrame]:
+    """One read of the warehouse, cached for fifteen minutes.
+
+    Cached as a whole rather than per frame so a pipeline run cannot land
+    between two queries and leave the page quoting segments from one state of
+    gold against orders from another. The TTL is what makes the page pick up a
+    daily job without anyone restarting it.
+    """
+    return warehouse.datasets(ENV)
+
+
 def load(name: str) -> pd.DataFrame:
-    return pd.read_csv(DATA / f"{name}.csv")
+    return load_all()[name]
 
 
 def styled(chart: alt.Chart) -> alt.Chart:
@@ -171,7 +200,31 @@ st.caption(
     f"As of **{meta.anchor_date}** (the last order in silver, not the pipeline "
     f"batch date) · {int(meta.active_customers):,} active customers · "
     f"${meta.spend_90d:,.2f} · {int(meta.orders_90d):,} orders · "
-    f"VIP threshold frozen at ${meta.frozen_vip_cut:.2f} for era comparisons")
+    f"live VIP cut ${meta.live_vip_cut:.2f}, frozen at "
+    f"${meta.frozen_vip_cut:.2f} for the era comparisons · read live from the "
+    f"Glue catalog")
+
+# Silver's last order against the anchor gold was built at. A daily job that
+# loads new orders moves the first and not the second until it runs, and every
+# segment on this page is stale by the difference. Shown rather than reconciled,
+# because reconciling it silently is how a dashboard reports last week.
+if int(meta.stale_days) > 0:
+    st.error(
+        f"**Gold is {int(meta.stale_days)} days behind silver.** The segments "
+        f"here were computed at **{meta.gold_anchor_date}** but silver now "
+        f"holds orders through **{meta.anchor_date}**. Re-run the "
+        f"`gp_silver_to_gold` job; until then every segment, threshold and "
+        f"share on this page is as of the older date.",
+        icon=":material/sync_problem:")
+
+if str(meta.anchored_tables) != "present":
+    st.warning(
+        "**The loyalty and transition tables are not published yet**, so the "
+        "last tab is empty. Everything else on this page reads gold and silver "
+        "directly and is unaffected. Run:  `python -m "
+        "python_scripts.silver_to_gold.silver_to_gold --env prod --full "
+        "--tables customer_segment_transitions loyalty_cohort_outcomes`",
+        icon=":material/table_rows:")
 
 st.info(
     "**Dormant customers are excluded throughout.** All 16,382 of them have "
@@ -452,11 +505,25 @@ with tab_program:
     st.subheader("Two readings of the loyalty program, and they disagree in scale")
 
     trans = load("transitions")
+    if trans.empty:
+        st.info(
+            "Nothing to show until `customer_segment_transitions` and "
+            "`loyalty_cohort_outcomes` are published. See the banner at the "
+            "top of the page for the command.",
+            icon=":material/hourglass_empty:")
+        st.stop()
+
     # New Growth and Never Returned are structurally unreachable as
     # destinations over 180 days, so they are zero in every row. Showing a
     # column of zeros invites the reading that acquisition stopped.
     trans = trans[~trans.grp_t1.isin(["New Growth", "Never Returned"])]
-    era_order = ["Pre-loyalty", "Post-loyalty"]
+    # Pre-launch is anchored to the program's first flagged order and never
+    # moves; Recent and Prior roll with the data. The paired panels compare the
+    # two fixed-against-latest ends, and Prior is the control that keeps the
+    # comparison honest -- see the caveat below them.
+    era_order = ["Pre-launch", "Recent"]
+    all_eras = [e for e in ["Pre-launch", "Prior", "Recent"]
+                if e in set(trans.era)]
     seg_order = [s for s in SEGMENT_ORDER + ["Dormant"]
                  if s in set(trans.seg_t0)]
 
@@ -466,7 +533,8 @@ with tab_program:
             (left, "Core", "Reached Core 180 days later", "higher is better"),
             (right, "Dormant", "Went Dormant 180 days later",
              "LOWER is better -- rightward is worse on this panel")):
-        sub = trans[trans.grp_t1.eq(grp)][["era", "seg_t0", "row_pct"]]
+        sub = trans[trans.grp_t1.eq(grp)
+                    & trans.era.isin(era_order)][["era", "seg_t0", "row_pct"]]
         with col:
             st.altair_chart(styled(paired_dots(
                 sub, key="seg_t0", value="row_pct", phase="era",
@@ -487,6 +555,36 @@ with tab_program:
         "inside the delta -- including the ~29 menu reprices of January 2023, "
         "which land between the two windows.",
         icon=":material/warning:")
+
+    # A third window, entirely inside the post-launch period, as a control. If
+    # progression to Core were improving with the program, the latest window
+    # should be the best one. It is not, and showing that is the difference
+    # between a dashboard and a sales deck.
+    if "Prior" in all_eras:
+        core = (trans[trans.grp_t1.eq("Core")]
+                .pivot_table(index="seg_t0", columns="era", values="row_pct",
+                             aggfunc="first")
+                .reindex(columns=all_eras))
+        if core.notna().all(axis=None):
+            peak = core.idxmax(axis=1)
+            n_prior = int((peak == "Prior").sum())
+            st.error(
+                f"**Progression to Core is not improving monotonically, and "
+                f"the middle window is the best one.** Of "
+                f"{len(core)} starting segments, **{n_prior} peak in the "
+                f"*Prior* window** (Feb-Aug 2023) rather than the latest one "
+                f"-- Slipping reaches Core 7.0% of the time before launch, "
+                f"13.7% in Prior, then falls back to 9.0% in Recent. So the "
+                f"pre/post gap above is a difference between two points, not "
+                f"a trend, and the honest claim is that the program coincided "
+                f"with a lift that has since partly reversed.",
+                icon=":material/dangerous:")
+            st.dataframe(core.reindex(seg_order).round(1), width="stretch")
+            st.caption(
+                "Share of each starting segment that reached Core 180 days "
+                "later, by window. `Pre-launch` is anchored to the program's "
+                "first flagged order and never moves; `Prior` and `Recent` "
+                "roll with the data.")
 
     st.divider()
     st.markdown("##### 2. Apples to apples: same window, members against non-members")
@@ -546,7 +644,7 @@ with tab_program:
     with st.expander("Full transition matrix"):
         wide = (trans.pivot_table(index=["era", "seg_t0"], columns="grp_t1",
                                   values="row_pct", aggfunc="first")
-                .reindex(era_order, level=0).fillna(0).round(1))
+                .reindex(all_eras, level=0).fillna(0).round(1))
         st.dataframe(wide, width="stretch")
         st.caption(
             "Row percentages. `New Growth` and `Never Returned` are omitted: "

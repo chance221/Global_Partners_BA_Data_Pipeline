@@ -40,8 +40,9 @@ get-job.json
 *.getjob.json
 *.raw.json
 
-#dashboard data
-dashboard/data/*.csv
+# No dashboard data rule any more: the app reads gold and silver live through
+# PyIceberg, so there is no materialised copy to ignore. If a CSV ever appears
+# under dashboard/ again it is a mistake worth seeing in `git status`.
 
 # streamlit secrets
 .streamlit/secrets.toml
