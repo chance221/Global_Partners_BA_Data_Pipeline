@@ -82,10 +82,6 @@ _GRAIN = ["clv_tier", "outliers"]
 
 def _pct(numerator, denominator):
     """A percentage that returns NULL rather than raising on a zero total.
-
-    ANSI mode is on in Spark 4, so `/` on a zero denominator is an error, not
-    an infinity. Only reachable on an empty batch, but an empty batch should
-    publish no rows rather than fail the whole job.
     """
     return (100 * F.try_divide(numerator, denominator)).cast("decimal(5,2)")
 

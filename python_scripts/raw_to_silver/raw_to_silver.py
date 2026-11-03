@@ -9,7 +9,7 @@ from python_scripts.common.models.config_models import AppConfig
 from python_scripts.spark.spark_session import create_spark_session
 from python_scripts.common.helpers import parse_data_date, yesterday_utc, check_business_keys_present_in_table
 from python_scripts.raw_to_silver.raw_transforms import (
-    apply_dynamic_transform, silver_reject_reasons,
+    apply_dynamic_transform, silver_reject_reasons, split_excluded,
 )
 from python_scripts.io_utils.quarantine import split_rejects, write_quarantine
 from python_scripts.raw_to_silver.silver_write import write_silver
@@ -39,9 +39,17 @@ def run_raw_to_silver(spark, s3Protocol, appConfig:AppConfig, batch_date:datetim
 
       updated_df = apply_dynamic_transform(accepted, tableConfig, batch_date)
 
+      # Out-of-scope rows leave after the transform, so a pattern matches the
+      # cleaned value rather than the source's spelling. Counted and reported
+      # rather than quarantined: they broke no contract, and silently dropping
+      # rows is the one thing a filter must never do.
+      updated_df, excluded_df = split_excluded(updated_df, tableConfig)
+      dropped = excluded_df.count() if tableConfig.silver_filters else 0
+
       outcome = write_silver(spark, updated_df, appConfig, table, tableConfig)
       quarantined = f" ({held} quarantined)" if held else ""
-      print(f"{table}: {outcome}{quarantined}")
+      excluded = f" ({dropped} excluded by silver_filters)" if dropped else ""
+      print(f"{table}: {outcome}{quarantined}{excluded}")
     except Exception as exc:
        
        failures[table] = f"{type(exc).__name__}: {exc}"

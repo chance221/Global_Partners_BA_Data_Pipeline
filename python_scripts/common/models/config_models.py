@@ -37,6 +37,18 @@ class TableConfig:
             column's type; this fixes its content, for source data that is
             structurally valid but textually wrong. Order matters -- each
             pattern sees the output of the one before it.
+        silver_filters: column name -> regexes whose match DROPS the row.
+            The third kind of intervention, and the only one that changes the
+            row COUNT: silver_transforms fixes a column's type, silver_cleaners
+            fixes its content, this decides whether the row belongs in the
+            warehouse at all. For source data that is perfectly valid but out
+            of scope -- a non-production app writing to the same tables.
+
+            Deliberately config rather than a transform, so that what silver
+            does not carry is visible in the same review as what it does.
+            Deliberately NOT quarantine: a quarantined row failed a contract
+            check and wants a human to look at it, whereas these rows are
+            correct and simply not ours. Raw keeps them either way.
     """
 
     source_table: str
@@ -45,6 +57,7 @@ class TableConfig:
     required_columns: dict[str, str] = field(default_factory=dict)
     silver_transforms: dict [str, str] = field(default_factory=dict)
     silver_cleaners: dict[str, list[list[str]]] = field(default_factory=dict)
+    silver_filters: dict[str, list[str]] = field(default_factory=dict)
     silver_write: str = "merge"
     silver_scope_keys: list[str] = field(default_factory=list)
     silver_partition_by: list[str] = field(default_factory=list)
@@ -101,6 +114,37 @@ class TableConfig:
             if uncarried:
                 raise ValueError(
                     f"silver_cleaners names columns absent from "
+                    f"required_columns: {sorted(uncarried)}"
+                )
+
+        # An empty pattern matches every row, so a stray '' would empty the
+        # table and report success -- the same failure the silver_scope_keys
+        # check above guards against, and the reason this is validated rather
+        # than left to Spark.
+        for column, patterns in self.silver_filters.items():
+            if not patterns:
+                raise ValueError(
+                    f"silver_filters[{column!r}] has no patterns; remove the "
+                    f"entry rather than leaving it empty"
+                )
+            for pattern in patterns:
+                if not isinstance(pattern, str) or not pattern:
+                    raise ValueError(
+                        f"silver_filters[{column!r}] pattern {pattern!r} must "
+                        f"be a non-empty string; an empty pattern matches "
+                        f"every row and would drop the whole table"
+                    )
+
+        # Worse than the cleaners case above, which is merely a no-op: a filter
+        # on a column silver does not carry would keep every row, so the
+        # exclusion the author asked for would silently never happen.
+        if self.required_columns:
+            uncarried = {c for c in self.silver_filters
+                         if c.lower() not in {r.lower()
+                                              for r in self.required_columns}}
+            if uncarried:
+                raise ValueError(
+                    f"silver_filters names columns absent from "
                     f"required_columns: {sorted(uncarried)}"
                 )
 

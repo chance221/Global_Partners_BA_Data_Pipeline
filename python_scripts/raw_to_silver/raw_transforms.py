@@ -94,3 +94,60 @@ def apply_dynamic_transform(df: DataFrame, tableConfig: TableConfig, batch_date:
     final_df = final_df.withColumn(col_lower, cleaned)
 
   return final_df
+
+
+def silver_exclusion(df: DataFrame, tableConfig: TableConfig) -> Column | None:
+  """A single boolean column, True for rows silver must NOT carry.
+
+  `None` when the table configures no filters, so the caller can skip the
+  split entirely rather than pay for a pass that drops nothing.
+
+  NULL-SAFETY IS THE WHOLE SUBTLETY HERE
+  --------------------------------------
+  `rlike` returns NULL against a NULL column, not False, and `filter` drops a
+  row whose predicate is NULL. So the negation of a bare `rlike` chain would
+  discard every row whose filtered column happens to be NULL -- rows that match
+  nothing and were never meant to go. `app_name` is nullable in the contract,
+  so this is a live case and not a theoretical one: coalescing to False means
+  "a NULL matches no pattern", which keeps the row.
+
+  Patterns are regexes, matched with `rlike` rather than compared with `==`, for
+  the same reason silver_cleaners takes regexes: the one real filter needs
+  `(?i)DEVELOPMENT` to catch a substring of a longer app name, and an exact list
+  would have to be revised every time the source adds a suffix.
+  """
+  if not tableConfig.silver_filters:
+    return None
+
+  matches = [
+      F.col(column.lower()).rlike(pattern)
+      for column, patterns in tableConfig.silver_filters.items()
+      for pattern in patterns
+  ]
+
+  combined = matches[0]
+  for match in matches[1:]:
+    combined = combined | match
+
+  return F.coalesce(combined, F.lit(False))
+
+
+def split_excluded(df: DataFrame,
+                   tableConfig: TableConfig) -> tuple[DataFrame, DataFrame]:
+  """Partition a transformed batch into the rows silver keeps and the rest.
+
+  Shaped like `split_rejects` deliberately, but it means something different.
+  A reject FAILED a contract check and is quarantined for a human to look at;
+  an excluded row is perfectly valid and simply out of scope, so it is dropped
+  and only counted. Raw still holds it, which is what makes dropping safe.
+
+  Applied AFTER apply_dynamic_transform, so a pattern matches the cleaned,
+  lowercased value rather than whatever the source spelled -- the same ordering
+  silver_cleaners relies on, and the reason a filter can be written against the
+  repaired category names rather than the broken ones.
+  """
+  excluded = silver_exclusion(df, tableConfig)
+  if excluded is None:
+    return df, df.limit(0)
+
+  return df.filter(~excluded), df.filter(excluded)

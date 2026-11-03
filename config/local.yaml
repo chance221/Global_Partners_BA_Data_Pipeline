@@ -89,6 +89,26 @@ tables:
         # judgement call, not a repair -- the variants above are unambiguous
         # corruption, this one merges 1,158 rows into a different label.
         - ["^Kids$", "Kid's"]
+    # Rows silver does not carry at all. silver_cleaners above repairs a value;
+    # this drops the row. The one entry is the `Alltown Fresh - DEVELOPMENT`
+    # app: a test deployment writing to the same source tables, measured at 826
+    # lines / 741 orders / $7,221.54 / 115 users, all on the single restaurant
+    # 6050e76361e498ca740bba6f, which carries no other traffic.
+    #
+    # Filtered rather than flagged because the cut is a clean partition -- no
+    # order mixes dev and non-dev lines and none of those 115 users ever
+    # ordered on a real store -- so no surviving customer's lifetime, cadence
+    # or segment is recomputed from a truncated history. Flagging would have
+    # meant threading a column through all 13 gold transforms; this is one
+    # place. Contrast `customer_lifetime_value.is_volume_outlier`, which stays
+    # a FLAG because whether those three accounts are real customers is a
+    # judgement that has to remain arguable. A non-production app name is not a
+    # judgement, and 17 of its users were sitting in the Top lifetime tier.
+    #
+    # Note `Alltown Neighborhood Perks` is NOT filtered: it is a real app on
+    # real stores that also carry main-app traffic. app_name has three values.
+    silver_filters:
+      app_name: ['(?i)DEVELOPMENT']
     watermark_column: inserted_at
     silver_write: merge
     # months, not days: at ~150 rows per day, days() produced 1336 partitions
@@ -508,3 +528,66 @@ gold:
       avg_customer_order_value: decimal(10,2)
       vip_spend_cut: decimal(18,2)
       anchor_date: date
+
+  # The only gold table with a clock on it, and the one the sales-trend view
+  # reads. Grain is (sales_date_local, restaurant_id, item_category,
+  # hour_local): 126,440 rows, fewer than silver.order_items, because a line
+  # item is the only thing finer than this cell.
+  #
+  # TIME IS LOCAL (America/New_York) HERE AND UTC EVERYWHERE ELSE. That is
+  # deliberate -- an hour-of-day column in UTC puts the 11am revenue peak at
+  # 4pm -- and it is why the date column is named sales_date_local rather than
+  # sales_date. It will NOT tie exactly to daily_restaurant_sales: $22,009.75,
+  # 1.24% of revenue, falls on a different calendar day in the two tables, so
+  # sales_date_utc is published as the bridge between them.
+  #
+  # Every measure here is additive. `orders` is NOT a distinct count per cell,
+  # which would double-count an order across its categories; each order is
+  # pinned to the cell of its largest line item, so summing any set of rows
+  # returns a true order count. The transform docstring has the reasoning.
+  #
+  # Honours the dashboard's volume-outlier toggle through the outlier_*
+  # columns below, so the sales-trend tab is not an exception to it. Who is
+  # flagged comes from clv_history, recomputed from silver, so the floor lives
+  # in one place for all four tables that use it.
+  #
+  # No event_time_column on purpose: the grain is the LOCAL date, so a
+  # UTC-dated incremental scope would replace the wrong rows either side of
+  # midnight. Full rebuild, partitioned by local month for range scans.
+  sales_trend_grid:
+    depends_on: [order_items, date_dim]
+    grain_keys: [sales_date_local, restaurant_id, item_category, hour_local]
+    write: replace
+    partition_by: ["months(sales_date_local)"]
+    output_columns:
+      sales_date_local: date
+      restaurant_id: string
+      item_category: string
+      hour_local: int
+      daypart: string
+      day_of_week: string
+      dow_number: int
+      is_weekend: boolean
+      is_holiday: boolean
+      holiday_name: string
+      week_start: date
+      month_start: date
+      sales_date_utc: date
+      orders: bigint
+      line_items: bigint
+      units: bigint
+      total_revenue: decimal(18,2)
+      # Each cell's flagged-account portion, so excluding the three volume
+      # accounts is `measure - outlier_measure` at any rollup. Four columns
+      # rather than a second set of rows, which only works because every
+      # measure here is additive -- the CLV tables need the grain-key version
+      # because a published median cannot be un-aggregated.
+      outlier_orders: bigint
+      outlier_line_items: bigint
+      outlier_units: bigint
+      outlier_revenue: decimal(18,2)
+      # True where any line in the cell came from a DEVELOPMENT app. Not
+      # filtered out, so this table still ties to the rest of the warehouse,
+      # but flagged: the dev traffic is one whole store that peaks at 1am and
+      # would read as a real 24-hour site on a staffing chart.
+      is_development: boolean

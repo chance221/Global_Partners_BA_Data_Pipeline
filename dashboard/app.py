@@ -60,6 +60,16 @@ st.set_page_config(page_title="Customer Segmentation",
 
 # Segments ordered by the recency band their own definitions force, so every
 # chart stacks them identically and one segment can be tracked down the page.
+# The tab LABELS, kept as constants because the page copy cross-references
+# them by name. They used to be referenced by position -- "the first tab",
+# "the last tab" -- which a reorder silently falsifies, and did. A name
+# cannot go stale that way. Defined up here rather than beside `st.tabs`
+# because the not-yet-published warnings above the tabs name them too.
+TAB_CLV = "Customer Lifetime Value"
+TAB_VALUE = "Where the Value Is"
+TAB_PROGRAM = "Is the program working"
+TAB_TREND = "Sales Trend Monitoring"
+
 SEGMENT_ORDER = ["VIP", "Loyal", "Promising", "Re-engaging", "New",
                  "Slipping", "Lapsing", "Never Returned"]
 GROUP_ORDER = ["Core", "Developing", "New Growth", "Churn Risk",
@@ -200,49 +210,114 @@ def ramp(n: int) -> list[str]:
     return steps if theme_base() == "dark" else steps[::-1]
 
 
-def heatmap(frame: pd.DataFrame, *, x: str, y: str, value: str,
-            x_order: list[str], y_order: list[str], title: str, subtitle: str,
-            label_fmt: str = ".1f", legend_title: str | None = None,
-            height: int = 190) -> alt.Chart:
-    """A matrix as colour PLUS the number written in every cell.
+# Steps in the matrix shading below. Six is measured, not a round number: it
+# is the step count whose WORST cell contrast is the highest in both themes at
+# once -- light 5.38:1 and dark 4.46:1, against 5.05/4.42 for every other
+# count from 4 to 9. Dark mode cannot do better than about 4.4 at the ramp's
+# mid-tones, where both ink ends are equally far away, so its two crossover
+# steps sit a hair under the 4.5:1 AA floor whatever the sampling.
+#
+# Acceptable HERE and not in a chart: every cell prints its own value, so the
+# shade is a second encoding of a number already written in text rather than
+# the only way to read it.
+_SHADE_STEPS = 6
 
-    A 3x9 matrix is the one place a heatmap beats bars: nine grouped bars
-    would need nine categorical hues, and the comparison that matters here is
-    across two dimensions at once.
 
-    The number is printed in every cell, so colour is a second encoding rather
-    than the only one. That is what makes the chart readable for someone who
-    cannot separate adjacent ramp steps, and it is why a one-hue sequential
-    ramp is enough -- the ramp carries the shape, the text carries the value.
+def _luminance(hex_colour: str) -> float:
+    """WCAG relative luminance of a `#rrggbb` string."""
+    r, g, b = (int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+           for c in (r, g, b)]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
 
-    Cell text flips between the two ink ends at the midpoint of the observed
-    range, because a single ink colour cannot clear contrast against both ends
-    of a ramp that spans most of the lightness axis.
+
+def _contrast(fg: str, bg: str) -> float:
+    """WCAG contrast ratio: 1.0 for identical colours, 21.0 black on white."""
+    hi, lo = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _ink_for(bg: str, p: dict) -> str:
+    """Whichever of the two ink ends actually reads against `bg`.
+
+    Picked by measured contrast with the cell's own background, not by where
+    the cell's value sits in its range. Those are not the same test and the
+    difference is visible: this ramp spans most of the lightness axis, so the
+    step in the MIDDLE of it is already dark enough to need light ink, and
+    flipping at the halfway value put near-black text on a navy cell.
+    """
+    return max((p["ink"], p["surface"]), key=lambda ink: _contrast(ink, bg))
+
+
+def shaded(frame: pd.DataFrame, *, axis: int | None, fmt: str = "{:.2f}"):
+    """A numeric matrix with every cell shaded by its magnitude.
+
+    A one-hue sequential ramp from `palette()`, with the value printed in
+    every cell, so colour is a second encoding of something already written
+    in text and never the only way to read a cell. That is the encoding the
+    tier-by-segment heatmap carried before this table replaced it; what
+    changed is the order of priority, with the exact figures leading and the
+    shape following behind them.
+
+    Hand-rolled rather than `Styler.background_gradient`, which needs
+    matplotlib. A plotting stack is a steep dependency for a page whose whole
+    premise is that it runs with no JVM on a small instance, and it would not
+    read `palette()` anyway, so the table would drift from every chart beside
+    it on a theme change.
+
+    `axis` is the direction the percentages sum to 100 in -- 1 for row
+    percentages, 0 for column percentages -- so a shade only ever compares
+    cells that share a denominator. Shading the other way round would rank a
+    tier's 58% against a segment's 4% as though they were one measure.
+
+    `axis=None` shades against the largest cell in the WHOLE frame instead,
+    which is the right reading when every cell shares one denominator. A
+    staffing grid compares Friday 11am against Monday 3pm directly; shading
+    it row by row would give every weekday its own private scale and make
+    each one's quietest hour look equally dead.
+
+    Scaled from zero to the largest value along that axis, not min-to-max:
+    under min-to-max the smallest cell in every line is forced to the palest
+    step whatever it holds, which makes an 18% read like an empty cell.
+
+    BOTH colours are set on every cell, the ink by `_ink_for` against that
+    cell's own background. Streamlit takes a dataframe's text colour from the
+    active theme, so a background set without an ink is unreadable in one of
+    the two themes -- and which end of the ramp goes pale swaps between them,
+    so neither ink can be hard-coded.
     """
     p = palette()
-    lo, hi = float(frame[value].min()), float(frame[value].max())
-    mid = lo + (hi - lo) / 2
-    base = alt.Chart(frame).encode(
-        x=alt.X(f"{x}:N", sort=x_order, title=None,
-                axis=alt.Axis(labelAngle=-35)),
-        y=alt.Y(f"{y}:N", sort=y_order, title=None))
-    cells = base.mark_rect(stroke=p["surface"], strokeWidth=2).encode(
-        color=alt.Color(f"{value}:Q",
-                        title=legend_title or value.replace("_", " "),
-                        scale=alt.Scale(range=ramp(8)[::-1], type="linear"),
-                        legend=alt.Legend(orient="right", gradientLength=140)),
-        tooltip=[alt.Tooltip(f"{y}:N"), alt.Tooltip(f"{x}:N"),
-                 alt.Tooltip(f"{value}:Q", format=".2f"),
-                 *[alt.Tooltip(f"{c}:Q", format=",.2f")
-                   for c in ("customers", "median_total_spend", "avg_orders")
-                   if c in frame.columns]])
-    text = base.mark_text(fontSize=11).encode(
-        text=alt.Text(f"{value}:Q", format=label_fmt),
-        color=alt.condition(alt.datum[value] > mid,
-                            alt.value(p["surface"]), alt.value(p["ink"])))
-    return (alt.layer(cells, text)
-            .properties(height=height,
-                        title=alt.Title(title, subtitle=subtitle)))
+    # `ramp` hands its first step to the largest value in either theme, so
+    # reversing it once here lets the index below grow with the magnitude.
+    steps = ramp(_SHADE_STEPS)[::-1]
+    inks = [_ink_for(step, p) for step in steps]
+
+    def top_of(values) -> float:
+        """Largest value, ignoring NaN, and 0.0 for an all-empty line."""
+        return max((float(v) for v in values if pd.notna(v)), default=0.0)
+
+    def css_for(values, top: float) -> list[str]:
+        out = []
+        for raw in values:
+            frac = (0.0 if top <= 0 or pd.isna(raw)
+                    else max(float(raw), 0.0) / top)
+            i = min(int(frac * len(steps)), len(steps) - 1)
+            out.append(f"background-color: {steps[i]}; color: {inks[i]}")
+        return out
+
+    if axis is None:
+        def css_block(block: pd.DataFrame) -> pd.DataFrame:
+            top = top_of(block.to_numpy().ravel())
+            return pd.DataFrame(
+                [css_for(row, top) for row in block.to_numpy()],
+                index=block.index, columns=block.columns)
+
+        return frame.style.apply(css_block, axis=None).format(fmt)
+
+    def css_line(line: pd.Series) -> list[str]:
+        return css_for(line, top_of(line))
+
+    return frame.style.apply(css_line, axis=axis).format(fmt)
 
 
 @st.cache_data(ttl=900, show_spinner="Reading the warehouse...")
@@ -329,6 +404,40 @@ def ranked_bar(frame: pd.DataFrame, value: str, key: str, *, title: str,
         text=alt.Text(f"{value}:Q", format=label_fmt))
     return (alt.layer(bars, labels)
             .properties(height=height, title=alt.Title(title, subtitle=subtitle)))
+
+
+def trend_line(frame: pd.DataFrame, *, x: str, y: str, title: str,
+               subtitle: str, y_title: str, value_fmt: str = "$,.0f",
+               height: int = 300) -> alt.Chart:
+    """One measure over time, with a crosshair instead of a dot per point.
+
+    A line is the form for change over time, and the granularity control
+    below goes down to the day -- over 1,300 points. A marker on every one is
+    a smear, and a label on every one is unreadable, so the hover layer is a
+    rule that snaps to the nearest x and reveals that point alone.
+
+    Single hue: there is one series, so a legend would name a colour nobody
+    needs to distinguish, and the title says what is plotted.
+    """
+    p = palette()
+    hover = alt.selection_point(nearest=True, on="mouseover", fields=[x],
+                                empty=False, clear="mouseout")
+    base = alt.Chart(frame).encode(
+        x=alt.X(f"{x}:T", title=None),
+        y=alt.Y(f"{y}:Q", title=y_title, scale=alt.Scale(nice=True)))
+    line = base.mark_line(strokeWidth=2, color=p["s1"])
+    # The rule and the point share one selection, so the crosshair and the
+    # tooltip cannot disagree about which period is under the cursor.
+    rule = base.mark_rule(color=p["ink2"]).encode(
+        opacity=alt.condition(hover, alt.value(0.35), alt.value(0)))
+    points = base.mark_circle(size=80, color=p["s1"]).encode(
+        opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+        tooltip=[alt.Tooltip(f"{x}:T", title="period"),
+                 alt.Tooltip(f"{y}:Q", title=y_title, format=",.2f")],
+    ).add_params(hover)
+    return (alt.layer(line, rule, points)
+            .properties(height=height,
+                        title=alt.Title(title, subtitle=subtitle)))
 
 
 def revenue_pie(frame: pd.DataFrame, key: str, order: list[str], *,
@@ -471,15 +580,17 @@ elif bool(meta.outliers_excluded):
         f"concentration finding does not depend on this choice.",
         icon=":material/filter_alt_off:")
 
-st.title("Customer Segmentation")
+st.title("Global Partners Sales Analysis")
 st.caption(
-    f"The trailing 90 days to **{meta.anchor_date}** -- the last order in "
-    f"silver, not the pipeline batch date · {int(meta.active_customers):,} "
-    f"active customers of {int(meta.all_customers):,} · "
-    f"${meta.spend_90d:,.2f} · {int(meta.orders_90d):,} orders · "
-    f"live VIP cut ${meta.live_vip_cut:.2f}, frozen at "
-    f"${meta.frozen_vip_cut:.2f} for the era comparisons · read live from the "
-    f"Glue catalog")
+    f"Due to the stale nature of the demo data an anchor was established using the "
+    f"last order date of **{meta.anchor_date}** -- and not the pipeline batch date. \n \n"
+    f"Because we need to understand recent cudsomter trends as of that anchor a 90 "
+    f"day look-back period was created for in-depth analysis of recent trends at that time"
+    f"The total numberof lifetime customers was {int(meta.all_customers):,}of which " 
+    f" {int(meta.active_customers):,} were considered active due to purchase activity "
+    f"during this time period for analysis."
+    )
+    
 
 # Silver's last order against the anchor gold was built at. A daily job that
 # loads new orders moves the first and not the second until it runs, and every
@@ -496,8 +607,9 @@ if int(meta.stale_days) > 0:
 
 if str(meta.anchored_tables) != "present":
     st.warning(
-        "**The loyalty and transition tables are not published yet**, so the "
-        "last tab is empty. Everything else on this page reads gold and silver "
+        f"**The loyalty and transition tables are not published yet**, so "
+        f"the **{TAB_PROGRAM}** tab is empty. Everything else on this page "
+        f"reads gold and silver "
         "directly and is unaffected. Run:  `python -m "
         "python_scripts.silver_to_gold.silver_to_gold --env prod --full "
         "--tables customer_segment_transitions loyalty_cohort_outcomes`",
@@ -593,9 +705,21 @@ st.info(
     f"so.",
     icon=":material/filter_alt:")
 
-tab_value, tab_clv, tab_program = st.tabs(
-    ["Where the Value Is", "Customer Lifetime Value",
-     "Is the program working"])
+# Lifetime value leads. It defines the tiers the 90-day segments are read
+# against, and it is where "revenue is repeat orders, not bigger baskets" is
+# established over all of history rather than inferred from a single 90-day
+# window -- so the value tab now reads as a recent slice of a pattern already
+# proved, rather than the pattern being guessed at and confirmed later.
+#
+# Display order is THIS list, not the order of the `with` blocks below. Those
+# stay where they are, which is what makes reordering the page a one-line
+# change instead of moving six hundred lines past each other.
+# Sales trend sits last because it is the one tab with no customer on it:
+# hours, weekdays, stores and menu categories. It answers an operational
+# question rather than a retention one, so it reads as a coda rather than as
+# an interruption to the three that build on each other.
+tab_clv, tab_value, tab_program, tab_trend = st.tabs(
+    [TAB_CLV, TAB_VALUE, TAB_PROGRAM, TAB_TREND])
 
 
 # --- 1. where the value is -----------------------------------------------
@@ -1019,8 +1143,8 @@ with tab_clv:
             f"smaller of the two, ${top.median_spend_per_order:,.2f} against "
             f"${mid.median_spend_per_order:,.2f}, so what the top tier has "
             f"is a longer right tail of large orders on top of far more of "
-            f"them. Same conclusion the 90-day window reaches on the first "
-            f"tab, now from all of history.",
+            f"them. The 90-day window reaches the same conclusion under "
+            f"**{TAB_VALUE}**; this is that conclusion over all of history.",
             icon=":material/insights:")
         st.caption(
             f"One figure above is definitional, not behavioural: the "
@@ -1079,22 +1203,31 @@ with tab_clv:
                    else "pct_of_segment")
             seg_cols = [s for s in SEGMENT_ORDER + ["Dormant"]
                         if s in set(segs.segment)]
-            st.altair_chart(styled(heatmap(
-                segs, x="segment", y="clv_tier", value=col,
-                x_order=seg_cols, y_order=tiers,
-                title=("What each lifetime tier is composed of"
-                       if col == "pct_of_tier"
-                       else "Where each segment's customers have ended up"),
-                subtitle=("Row percentages: each tier's customers split "
-                          "across their current 90-day segment."
-                          if col == "pct_of_tier"
-                          else "Column percentages: each segment split "
-                               "across lifetime spend tiers."),
-                legend_title="percent")), width="stretch")
-
+            # The matrix IS this section's evidence, so it leads the section
+            # and it leads as numbers. The two callouts below quote single
+            # cells to the decimal -- 58.7% of the Top tier, 49.1% of its
+            # spend -- and a colour ramp can only gesture at a value a
+            # reader then has to hunt for in a table anyway. At three tiers
+            # by eight segments the grid is small enough to read directly.
             wide = (segs.pivot_table(index="clv_tier", columns="segment",
                                      values=col, aggfunc="first")
                     .reindex(index=tiers, columns=seg_cols).fillna(0))
+
+            # Shaded along whichever direction sums to 100, so the colour
+            # and the percentage agree on what is being compared.
+            st.dataframe(shaded(wide, axis=1 if col == "pct_of_tier" else 0),
+                         width="stretch")
+            st.caption(
+                f"`{col}`. Rows are lifetime spend tiers, columns are the "
+                f"current 90-day segment. "
+                + ("Row percentages: each tier's customers split across "
+                   "their current 90-day segment, so each row sums to 100 "
+                   "and each row is shaded against its own largest cell."
+                   if col == "pct_of_tier"
+                   else "Column percentages: each segment split across "
+                        "lifetime spend tiers, so each column sums to 100 "
+                        "and each column is shaded against its own largest "
+                        "cell."))
             dormant_top = (segs[segs.clv_tier.eq(tiers[0])
                                 & segs.segment.eq("Dormant")])
             core_all = segs[segs.segment.isin(["VIP", "Loyal"])]
@@ -1114,8 +1247,8 @@ with tab_clv:
                 f"between them. That cell is the reason this table crosses a "
                 f"lifetime measure against a recent one: neither the 90-day "
                 f"segments nor the lifetime tiers can show it alone, and it "
-                f"is a larger recoverable sum than anything on the first "
-                f"tab.",
+                f"is a larger recoverable sum than anything under "
+                f"**{TAB_VALUE}**.",
                 icon=":material/priority_high:")
             st.markdown(
                 f"Read the other way: VIP and Loyal together are "
@@ -1125,14 +1258,6 @@ with tab_clv:
                 f"reached the Top tier. The segments and the "
                 f"tiers agree at the extremes and disagree in the middle, "
                 f"which is where the money that can still be moved sits.")
-
-            with st.expander("Full tier x segment matrix"):
-                st.dataframe(wide.round(2), width="stretch")
-                st.caption(
-                    f"`{col}`. Rows are lifetime spend tiers, columns are "
-                    f"the current 90-day segment. "
-                    + ("Each row sums to 100." if col == "pct_of_tier"
-                       else "Each column sums to 100."))
 
     st.divider()
 
@@ -1365,3 +1490,364 @@ with tab_program:
             "can satisfy 180 days later, and Never Returned requires a single "
             "lifetime order, which would place the customer past 180 days of "
             "recency and so into Dormant first. Both are structurally zero.")
+
+
+# --- 4. sales trend monitoring -------------------------------------------
+#
+# One decision: when and where to put people and product. Nothing on this tab
+# is a customer -- it is hours, weekdays, stores and menu categories -- which
+# is why it is a tab of its own rather than a section inside one of the
+# others.
+#
+# Reads `gold.sales_trend_grid`, the only gold table carrying a clock, and the
+# only one on local time.
+
+with tab_trend:
+    grid = load("sales_trend")
+
+    if grid.empty:
+        st.warning(
+            f"**The sales-trend table is not published yet.** Run:  `python "
+            f"-m python_scripts.silver_to_gold.silver_to_gold --env prod "
+            f"--full --tables sales_trend_grid`  ({meta.sales_trend_table})",
+            icon=":material/table_rows:")
+    else:
+        st.subheader("When the demand lands, and where")
+        st.caption(
+            f"One row per store, per menu category, per hour of the **local** "
+            f"day. Every clock time on this tab is America/New_York: the "
+            f"pipeline stores UTC and `sales_trend_grid` is the one table "
+            f"that converts, because read in UTC the 11:00 revenue peak "
+            f"lands at 16:00 and every staffing conclusion drawn from it "
+            f"would be five hours out. Through {meta.anchor_date}.")
+
+        _dev_cells = int(grid.is_development.sum())
+        _dev_rev = float(grid[grid.is_development].total_revenue.sum())
+        keep_dev = st.toggle(
+            "Put the development store back in", value=False,
+            key="trend_dev",
+            help="One restaurant id carries the entire 'Alltown Fresh - "
+                 "DEVELOPMENT' app. It is test traffic whose hours are test "
+                 "hours, and it is left out of this tab by default.")
+        if not keep_dev:
+            grid = grid[~grid.is_development].copy()
+
+        if _dev_cells and not keep_dev:
+            st.info(
+                f"**The development store is excluded here, and only here.** "
+                f"{_dev_cells:,} cells, ${_dev_rev:,.2f}, 0.41% of revenue. "
+                f"It matters more than its size: because the test traffic is "
+                f"one entire store rather than rows scattered through real "
+                f"ones, it would appear below as the single location of 28 "
+                f"that trades overnight -- it peaks at 01:00 and takes most "
+                f"of its revenue before 06:00. The rows are still in "
+                f"`gold.sales_trend_grid` and in every other table in the "
+                f"warehouse, so this tab sits ${_dev_rev:,.2f} below the "
+                f"rest of the page on purpose rather than by accident.",
+                icon=":material/science:")
+
+        if bool(meta.outliers_excluded):
+            st.caption(
+                f"The sidebar exclusion **is** applied to this tab. It works "
+                f"by subtraction rather than by filtering: every measure in "
+                f"`sales_trend_grid` is additive and each cell publishes its "
+                f"own flagged-account portion, so the excluded reading is "
+                f"`measure - outlier_measure` at any rollup. There is no "
+                f"customer column on this table to filter on.")
+
+        _rev = float(grid.total_revenue.sum())
+        _orders = int(grid.orders.sum())
+        by_hour = (grid.groupby("hour_local", as_index=False)
+                   .agg(revenue=("total_revenue", "sum"),
+                        orders=("orders", "sum")))
+        _peak = by_hour.loc[by_hour.revenue.idxmax()]
+
+        def _per_day(weekend: bool) -> float:
+            sub = grid[grid.is_weekend.fillna(False).astype(bool) == weekend]
+            return (float(sub.total_revenue.sum())
+                    / max(sub.sales_date_local.nunique(), 1))
+
+        _weekday, _weekend = _per_day(False), _per_day(True)
+        _evening = 100.0 * float(
+            grid[grid.hour_local >= 18].total_revenue.sum()) / max(_rev, 0.01)
+
+        a, b, c, d = st.columns(4)
+        a.metric("Revenue on this tab", f"${_rev:,.0f}",
+                 f"{_orders:,} orders", delta_color="off")
+        b.metric("Busiest hour", f"{int(_peak.hour_local):02d}:00",
+                 f"{100 * _peak.revenue / _rev:.1f}% of revenue",
+                 delta_color="off")
+        c.metric("Weekday average", f"${_weekday:,.0f}/day",
+                 f"{100 * (_weekday - _weekend) / max(_weekend, 0.01):+.0f}% "
+                 f"vs weekend")
+        d.metric("After 18:00", f"{_evening:.1f}%", "of all revenue",
+                 delta_color="off")
+
+        st.divider()
+
+        # --- the trend itself --------------------------------------------
+        st.markdown("##### Revenue over time")
+
+        gran = st.radio(
+            "Granularity", ["Month", "Week", "Day"], horizontal=True,
+            key="trend_gran",
+            help="Month and Week drop their incomplete first and last "
+                 "periods. Day does not need to: a day is a whole day.")
+        _period_col, _complete_col = {
+            "Month": ("month_start", "month_complete"),
+            "Week": ("week_start", "week_complete"),
+            "Day": ("sales_date_local", None),
+        }[gran]
+
+        series = (grid.groupby(_period_col, as_index=False)
+                  .agg(revenue=("total_revenue", "sum"),
+                       orders=("orders", "sum")))
+        _dropped: list[str] = []
+        if _complete_col:
+            _ok = grid.groupby(_period_col)[_complete_col].max()
+            _dropped = [str(k) for k, good in _ok.items() if not good]
+            series = series[series[_period_col].isin(
+                [k for k, good in _ok.items() if good])]
+        series[_period_col] = pd.to_datetime(series[_period_col])
+
+        st.altair_chart(styled(trend_line(
+            series, x=_period_col, y="revenue",
+            title=f"Revenue by {gran.lower()}",
+            subtitle=("Local calendar periods. Hover for the figure; the "
+                      "line is one series, so there is no legend to read."),
+            y_title="revenue")), width="stretch")
+
+        if _dropped:
+            st.caption(
+                f"**{len(_dropped)} incomplete {gran.lower()}"
+                f"{'s' if len(_dropped) > 1 else ''} dropped** rather than "
+                f"plotted: {', '.join(_dropped)}. Silver ends "
+                f"{meta.anchor_date} and begins mid-period, so the first and "
+                f"last buckets hold fewer days than the rest. Drawn "
+                f"unmarked they read as a collapse in demand, and the "
+                f"collapse is the calendar.")
+
+        # The slope is worth stating rather than leaving to the eye, because
+        # the eye will read the dropped partial period as part of the shape.
+        if len(series) >= 6:
+            _first3 = float(series.sort_values(_period_col).revenue.head(3).mean())
+            _last3 = float(series.sort_values(_period_col).revenue.tail(3).mean())
+            _slope = 100.0 * (_last3 - _first3) / max(_first3, 0.01)
+            st.markdown(
+                f"Across complete {gran.lower()}s the first three average "
+                f"${_first3:,.0f} and the last three ${_last3:,.0f}, "
+                f"**{_slope:+.1f}%**. Read it as a trend only at Month: at "
+                f"Day and Week the series is dominated by the weekday cycle "
+                f"below, not by anything moving over the period.")
+
+        st.divider()
+
+        # --- hour of day --------------------------------------------------
+        st.markdown("##### The shape of a day")
+
+        by_hour["hour_label"] = by_hour.hour_local.map(lambda h: f"{h:02d}")
+        _hour_order = [f"{h:02d}" for h in range(24)]
+        # Selective labels, not one per bar: three labels name the peak, and
+        # twenty-four would be a second axis made of text.
+        _top3 = set(by_hour.nlargest(3, "revenue").hour_local)
+        by_hour["peak_label"] = [
+            f"${r.revenue:,.0f}" if r.hour_local in _top3 else ""
+            for r in by_hour.itertuples()]
+
+        _p = palette()
+        _hour_base = alt.Chart(by_hour).encode(
+            x=alt.X("hour_label:N", sort=_hour_order,
+                    title="hour of the local day"),
+            y=alt.Y("revenue:Q", title="revenue"))
+        st.altair_chart(styled(alt.layer(
+            _hour_base.mark_bar(color=_p["s1"], cornerRadiusTopLeft=4,
+                                cornerRadiusTopRight=4,
+                                stroke=_p["surface"], strokeWidth=2)
+            .encode(tooltip=[
+                alt.Tooltip("hour_label:N", title="hour"),
+                alt.Tooltip("revenue:Q", title="revenue", format="$,.2f"),
+                alt.Tooltip("orders:Q", title="orders", format=",.0f")]),
+            _hour_base.mark_text(dy=-8, color=_p["ink2"], fontSize=11)
+            .encode(text=alt.Text("peak_label:N")),
+        ).properties(height=300, title=alt.Title(
+            "Revenue by hour of the local day",
+            subtitle="One hue: the hour is already named on the axis."))),
+            width="stretch")
+
+        _dayparts = [d for d in warehouse.DAYPART_ORDER
+                     if d in set(grid.daypart)]
+        _dp = (grid.groupby("daypart").total_revenue.sum()
+               .reindex(_dayparts).fillna(0.0))
+        _dp_pct = 100.0 * _dp / max(float(_dp.sum()), 0.01)
+        st.markdown(
+            "Grouped into the buckets a shift is actually planned in: "
+            + ", ".join(f"**{name}** {_dp_pct[name]:.1f}%"
+                        for name in _dayparts)
+            + ". The two busiest clock hours together are "
+            + f"{100 * float(by_hour.nlargest(2, 'revenue').revenue.sum()) / max(_rev, 0.01):.1f}%"
+            + " of everything this tab counts.")
+
+        st.divider()
+
+        # --- the staffing grid -------------------------------------------
+        st.markdown("##### Which hours of which days")
+        st.caption(
+            "Revenue per **open day**, not total revenue, so a Monday is "
+            "comparable with a Saturday despite there being more Mondays in "
+            "the data. Shaded against the largest cell in the whole grid "
+            "rather than within each row: the question is where the busiest "
+            "hour of the week is, and per-row shading would give every "
+            "weekday its own private scale.")
+
+        _cells = (grid.groupby(["dow_number", "day_of_week", "hour_local"],
+                               as_index=False)
+                  .agg(revenue=("total_revenue", "sum")))
+        _open = (grid.groupby(["dow_number", "day_of_week"], as_index=False)
+                 .agg(days=("sales_date_local", "nunique")))
+        _cells = _cells.merge(_open, on=["dow_number", "day_of_week"])
+        _cells["per_day"] = _cells.revenue / _cells.days.clip(lower=1)
+
+        _dow_labels = (_open.sort_values("dow_number").day_of_week.tolist())
+        _week_grid = (_cells.pivot_table(index="day_of_week",
+                                         columns="hour_local",
+                                         values="per_day", aggfunc="first")
+                      .reindex(index=_dow_labels,
+                               columns=list(range(24))).fillna(0.0))
+        _week_grid.columns = [f"{h:02d}" for h in _week_grid.columns]
+        st.dataframe(shaded(_week_grid, axis=None, fmt="${:,.0f}"),
+                     width="stretch")
+
+        _hot = _cells.loc[_cells.per_day.idxmax()]
+        # What that day would look like with no peak at all, as the thing the
+        # peak is worth comparing against: a daily total tells a planner
+        # nothing about which shift needs the people.
+        _hot_day_total = float(
+            _cells[_cells.day_of_week.eq(_hot.day_of_week)].per_day.sum())
+        _flat_hour = _hot_day_total / 24.0
+        st.success(
+            f"**The week peaks on {_hot.day_of_week} at "
+            f"{int(_hot.hour_local):02d}:00, at ${_hot.per_day:,.2f} per "
+            f"open day.** Weekdays run ${_weekday:,.0f} a day against "
+            f"${_weekend:,.0f} at weekends, so the busiest shift of the week "
+            f"is a weekday midday one. This is the answer a daily total "
+            f"cannot give: spread evenly across 24 hours that same "
+            f"{_hot.day_of_week} would be ${_flat_hour:,.2f} an hour, and "
+            f"the peak hour is "
+            f"{_hot.per_day / max(_flat_hour, 0.01):,.1f}x that. Demand is "
+            f"concentrated enough that staffing to the average misses it "
+            f"twice over -- short at the peak, idle overnight.",
+            icon=":material/schedule:")
+
+        st.divider()
+
+        # --- what to prep, and when --------------------------------------
+        st.markdown("##### What sells, and when it sells")
+
+        _by_cat = (grid.groupby("item_category").total_revenue.sum()
+                   .sort_values(ascending=False))
+        # Eight plus Other, matching the project's existing cut: the category
+        # tables use a 1%-of-all-time-sales threshold, which keeps eight
+        # categories, and eight is also the ceiling on distinguishable
+        # categorical steps. The tail is grouped rather than dropped so each
+        # column still sums to 100.
+        _keep = list(_by_cat.head(8).index)
+        _tail = [c for c in _by_cat.index if c not in _keep]
+        _mix = grid.assign(category=grid.item_category.where(
+            grid.item_category.isin(_keep), "Other"))
+        _mix = (_mix.groupby(["category", "daypart"], as_index=False)
+                .agg(revenue=("total_revenue", "sum")))
+        _mix["pct"] = 100.0 * _mix.revenue / _mix.groupby(
+            "daypart").revenue.transform("sum")
+        _cat_order = _keep + (["Other"] if _tail else [])
+        _cat_grid = (_mix.pivot_table(index="category", columns="daypart",
+                                      values="pct", aggfunc="first")
+                     .reindex(index=_cat_order, columns=_dayparts).fillna(0.0))
+        st.dataframe(shaded(_cat_grid, axis=0, fmt="{:.1f}"),
+                     width="stretch")
+        st.caption(
+            f"Percent of each daypart's revenue, so every **column** sums to "
+            f"100 and the shading runs down the columns for that reason. The "
+            f"{len(_tail)} categories below the top eight are grouped as "
+            f"`Other` ({_by_cat.tail(len(_tail)).sum() / max(float(_by_cat.sum()), 0.01) * 100:.1f}% "
+            f"of revenue) rather than dropped, so the columns still total.")
+
+        if {"Morning", "Midday"} <= set(_cat_grid.columns):
+            _am = _cat_grid["Morning"].idxmax()
+            _noon = _cat_grid["Midday"].idxmax()
+            if _am != _noon:
+                st.info(
+                    f"**The menu rotates through the day, so one prep plan "
+                    f"will not fit it.** `{_am}` is "
+                    f"{_cat_grid.loc[_am, 'Morning']:.0f}% of Morning revenue "
+                    f"and `{_noon}` is {_cat_grid.loc[_noon, 'Midday']:.0f}% "
+                    f"of Midday. Read down a column, not across a row: the "
+                    f"columns are shares of very different totals, and "
+                    f"Midday alone is "
+                    f"{_dp_pct.get('Midday', 0):.0f}% of the day.",
+                    icon=":material/restaurant:")
+
+        st.divider()
+
+        # --- by location --------------------------------------------------
+        st.markdown("##### Which stores, and whether they agree")
+
+        _stores = (grid.groupby("restaurant_id", as_index=False)
+                   .agg(revenue=("total_revenue", "sum"),
+                        orders=("orders", "sum"),
+                        open_days=("sales_date_local", "nunique"),
+                        first_sale=("sales_date_local", "min"),
+                        last_sale=("sales_date_local", "max")))
+        _store_hour = (grid.groupby(["restaurant_id", "hour_local"],
+                                    as_index=False)
+                       .agg(revenue=("total_revenue", "sum"))
+                       .sort_values("revenue", ascending=False)
+                       .drop_duplicates("restaurant_id"))
+        _stores = _stores.merge(
+            _store_hour[["restaurant_id", "hour_local"]].rename(
+                columns={"hour_local": "peak_hour"}),
+            on="restaurant_id", how="left")
+        _stores["per_open_day"] = _stores.revenue / _stores.open_days.clip(lower=1)
+        _stores["pct_of_revenue"] = 100.0 * _stores.revenue / max(_rev, 0.01)
+        _stores = _stores.sort_values("revenue", ascending=False)
+
+        _peak_spread = _stores.peak_hour.value_counts().sort_index()
+        st.error(
+            f"**The {len(_stores)} stores do not share a peak hour, so a "
+            f"chain-wide shift pattern is wrong for most of them.** Their "
+            f"individual peaks fall across "
+            f"{len(_peak_spread)} different hours: "
+            + ", ".join(f"{int(h):02d}:00 ({int(n)})"
+                        for h, n in _peak_spread.items())
+            + f". Only {int(_peak_spread.max())} stores share the most "
+            f"common one. The top store is "
+            f"{_stores.pct_of_revenue.iloc[0]:.1f}% of revenue on this tab "
+            f"and the top five are "
+            f"{_stores.pct_of_revenue.head(5).sum():.1f}%, so a single "
+            f"rollup hour is largely the biggest store's hour.",
+            icon=":material/storefront:")
+
+        st.dataframe(
+            _stores[["restaurant_id", "revenue", "per_open_day", "orders",
+                     "peak_hour", "open_days", "first_sale", "last_sale",
+                     "pct_of_revenue"]]
+            .rename(columns={"per_open_day": "revenue_per_open_day"}),
+            width="stretch", hide_index=True,
+            column_config={
+                "revenue": st.column_config.NumberColumn(format="$%.2f"),
+                "revenue_per_open_day": st.column_config.NumberColumn(
+                    format="$%.2f"),
+                "pct_of_revenue": st.column_config.NumberColumn(
+                    format="%.2f%%"),
+            })
+        st.caption(
+            f"`revenue_per_open_day` is the comparable column, not `revenue`: "
+            f"{int((_stores.first_sale > _stores.first_sale.min()).sum())} of "
+            f"{len(_stores)} stores have a first sale later than the "
+            f"earliest, and "
+            f"{int((_stores.open_days < 30).sum())} traded on fewer than 30 "
+            f"days in total, so a lifetime total ranks length of service as "
+            f"much as it ranks demand. `peak_hour` is that store's own "
+            f"highest-revenue hour and is thin for the smallest stores -- at "
+            f"a few hundred dollars across a handful of days it is close to "
+            f"noise, which is the other reason the callout above counts "
+            f"stores rather than weighting them.")

@@ -25,7 +25,7 @@ from python_scripts.silver_to_gold.transforms import (
     clv_tier_segments, customer_lifetime_value, customer_rfm,
     customer_segment_transitions, daily_restaurant_sales,
     loyalty_cohort_outcomes, loyalty_era_profile, loyalty_order_profile,
-    restaurant_revenue_rank,
+    restaurant_revenue_rank, sales_trend_grid,
 )
 
 Transform = Callable[[dict[str, DataFrame], datetime], DataFrame]
@@ -43,6 +43,7 @@ TRANSFORMS: dict[str, Transform] = {
     "loyalty_cohort_outcomes": loyalty_cohort_outcomes.build,
     "clv_tier_profile": clv_tier_profile.build,
     "clv_tier_segments": clv_tier_segments.build,
+    "sales_trend_grid": sales_trend_grid.build,
 }
 
 # `segment_history` and `clv_history` are deliberately absent: they are the

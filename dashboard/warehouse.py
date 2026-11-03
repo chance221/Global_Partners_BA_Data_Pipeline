@@ -88,6 +88,23 @@ OUTLIERS_EXCLUDED = "excluded"
 _ORDER_COLS = ("user_id", "order_id", "creation_time_utc", "item_price",
                "item_quantity", "is_loyalty")
 
+# Hour buckets in clock order. Must match sales_trend_grid.DAYPARTS, and for
+# the same reason as CLV_TIERS above: the published column is a string with no
+# natural sort, so without this the charts come out alphabetical -- Afternoon,
+# Evening, Midday, Morning, Overnight -- which reads as nonsense on a time
+# axis. Not imported from the transform, which would pull in pyspark.
+DAYPART_ORDER = ["Overnight", "Morning", "Midday", "Afternoon", "Evening"]
+
+# Measure -> the column holding its volume-outlier portion. The names are not
+# uniform (`total_revenue` pairs with `outlier_revenue`), so the pairing is
+# written out rather than derived with a prefix.
+SALES_MEASURES = (
+    ("orders", "outlier_orders"),
+    ("line_items", "outlier_line_items"),
+    ("units", "outlier_units"),
+    ("total_revenue", "outlier_revenue"),
+)
+
 
 def catalog(env: str = "prod"):
     """The Glue catalog, configured from the same YAML the jobs read."""
@@ -453,6 +470,55 @@ def gold_clv(cat, cfg, variant: str = OUTLIERS_INCLUDED) -> dict[str, pd.DataFra
 
 # --- the one entry point --------------------------------------------------
 
+def sales_trend(cat, cfg, exclude_outliers: bool = False) -> pd.DataFrame:
+    """The hourly sales grid, with the volume accounts netted out on request.
+
+    Returned WHOLE rather than pre-aggregated. The tab rolls it up by day, by
+    week and by month, and by store, category, weekday and hour, and 126,433
+    rows is a third of the silver read this page already does. One frame per
+    combination would be a dozen frames that can disagree about a total.
+
+    The exclusion here is a SUBTRACTION, not a filter, and that is the whole
+    reason this tab can honour the toggle when the era tables cannot. Every
+    measure in `sales_trend_grid` is additive and each cell publishes its own
+    flagged-account portion, so `measure - outlier_measure` is the excluded
+    reading at ANY rollup. There is no customer grain here to filter on -- the
+    grid has no user_id -- so without those columns the only options would be
+    a second table or an honest refusal.
+
+    The `outlier_*` columns are left on the frame after the subtraction, so
+    the page can say what it removed rather than only showing what remains.
+
+    `week_complete` and `month_complete` are added here because the trap they
+    cover is not optional: silver ends 2024-02-20, so the last month holds 20
+    days and the last week holds 2. Plotted unmarked, a complete-looking
+    series falls off a cliff at the right-hand edge and the drop is the
+    calendar, not the business. The first period has the same problem at the
+    other end -- April 2020 is 2 days -- so completeness is computed against
+    both ends of the data's own span.
+    """
+    df = scan(cat, cfg, "gold", "sales_trend_grid")
+    df = _floats(df, "total_revenue", "outlier_revenue")
+
+    if exclude_outliers:
+        for measure, portion in SALES_MEASURES:
+            df[measure] = df[measure] - df[portion]
+
+    span_start, span_end = df.sales_date_local.min(), df.sales_date_local.max()
+    week = pd.to_datetime(df.week_start)
+    month = pd.to_datetime(df.month_start)
+    # Spark's `trunc(date, 'week')` starts the week on Monday, so the period
+    # ends six days later; MonthEnd(0) on a month-start date returns that
+    # month's own last day rather than the next one's.
+    df["week_complete"] = ((week.dt.date >= span_start)
+                           & ((week + pd.Timedelta(days=6)).dt.date
+                              <= span_end))
+    df["month_complete"] = ((month.dt.date >= span_start)
+                            & ((month + pd.offsets.MonthEnd(0)).dt.date
+                               <= span_end))
+    return df
+
+
 def datasets(env: str = "prod",
              exclude_outliers: bool = False) -> dict[str, pd.DataFrame]:
     """Every frame the dashboard draws, from one read of the warehouse.
@@ -577,6 +643,23 @@ def datasets(env: str = "prod",
         frames["loyalty_by_segment"] = empty.copy()
         frames["loyalty_pooled"] = empty.copy()
         frames["meta"]["anchored_tables"] = f"missing: {exc}"
+
+    # Its own try for the same reason as the two below: this table is newer
+    # than the others, so a warehouse that predates it should still draw every
+    # other tab rather than fail on the first read.
+    try:
+        frames["sales_trend"] = sales_trend(cat, cfg, exclude_outliers)
+        frames["meta"]["sales_trend_table"] = "present"
+    except NoSuchTableError as exc:
+        frames["sales_trend"] = pd.DataFrame(columns=[
+            "sales_date_local", "restaurant_id", "item_category", "hour_local",
+            "daypart", "day_of_week", "dow_number", "is_weekend", "is_holiday",
+            "holiday_name", "week_start", "month_start", "sales_date_utc",
+            "orders", "line_items", "units", "total_revenue",
+            "outlier_orders", "outlier_line_items", "outlier_units",
+            "outlier_revenue", "is_development", "week_complete",
+            "month_complete"])
+        frames["meta"]["sales_trend_table"] = f"missing: {exc}"
 
     # A separate try, not folded into the one above: a missing CLV table must
     # not report the anchored tables as missing too, and vice versa. They are
