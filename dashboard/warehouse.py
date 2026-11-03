@@ -71,6 +71,20 @@ ERA_LABELS = {"Pre-launch": "Pre-launch", "Recent": "Recent",
 COHORT_LABELS = {"Member at T0": "member", "Non-member at T0": "non-member"}
 ALL_CUSTOMERS = "All customers"
 
+# Reading order for the lifetime-spend tiers, highest spend first. The gold
+# table stores the tier as a string with no natural sort, so without this the
+# charts come out alphabetical: Bottom, Mid, Top. Must match
+# `clv_history.TIERS`, which is what the pipeline writes.
+CLV_TIERS = ["Top", "Mid", "Bottom"]
+
+# Must match clv_history.OUTLIER_VARIANTS. Not imported from it: the dashboard
+# runs without pyspark installed -- that is the whole point of reading gold
+# through PyIceberg -- and importing a transform module would pull the JVM
+# bindings in. The contract is the published column, and `gold_clv` fails loud
+# below if the table does not carry the variant it was asked for.
+OUTLIERS_INCLUDED = "included"
+OUTLIERS_EXCLUDED = "excluded"
+
 _ORDER_COLS = ("user_id", "order_id", "creation_time_utc", "item_price",
                "item_quantity", "is_loyalty")
 
@@ -160,6 +174,29 @@ def customers(cat, cfg) -> pd.DataFrame:
         "spend_last90d", "vip_spend_cut", "anchor_date"))
     return _floats(df, "avg_gap_days", "total_revenue", "spend_last90d",
                    "vip_spend_cut")
+
+
+def volume_outliers(cat, cfg) -> pd.DataFrame:
+    """The accounts `gold.customer_lifetime_value` has flagged as non-consumer.
+
+    Read from the published flag rather than re-derived from an order count
+    here, so the dashboard and the three gold tables cannot disagree about
+    which accounts are set aside. `clv_history.OUTLIER_ORDER_FLOOR` is the one
+    place the rule is written down; this is a consumer of its output.
+
+    Three rows at the time of writing, ordering 1.4-2.4 times a day for over a
+    year each. Returned whole rather than as a set of ids because the page
+    names them and quotes their totals -- an exclusion the reader cannot see
+    the size of is worse than no exclusion.
+    """
+    df = scan(cat, cfg, "gold", "customer_lifetime_value",
+              ("user_id", "total_orders", "total_lifetime_revenue",
+               "avg_order_value", "orders_per_active_day", "clv_segment",
+               "first_order_date", "last_order_date", "is_volume_outlier"))
+    df = df[df.is_volume_outlier.fillna(False).astype(bool)]
+    df = _floats(df, "total_lifetime_revenue", "avg_order_value",
+                 "orders_per_active_day")
+    return df.sort_values("total_orders", ascending=False).reset_index(drop=True)
 
 
 # --- derived frames -------------------------------------------------------
@@ -252,6 +289,23 @@ def cadence_frames(cust: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return out
 
 
+def segment_sizes(cust: pd.DataFrame) -> pd.DataFrame:
+    """One row per segment, for the definitions reference at the top of the page.
+
+    Dormant is included here and nowhere else. Every other frame drops it
+    because its 90-day figures are zero by definition, but the reference exists
+    to say what each segment MEANS, and omitting the one that holds four fifths
+    of the base would misrepresent the shape of the book.
+
+    Counted live rather than written into the page, so a definition and its
+    headcount cannot drift apart after a pipeline run.
+    """
+    out = (cust.groupby(["segment", "segment_group"], as_index=False)
+           .agg(customers=("user_id", "size"), is_active=("is_active", "max")))
+    out["pct_of_base"] = (100.0 * out.customers / len(cust)).round(1)
+    return out.sort_values("customers", ascending=False).reset_index(drop=True)
+
+
 def reorder_cliff(orders: pd.DataFrame, anchor: date) -> pd.DataFrame:
     """How long a customer took to order again, and what they became.
 
@@ -338,19 +392,127 @@ def gold_loyalty(cat, cfg) -> dict[str, pd.DataFrame]:
             "loyalty_pooled": pooled}
 
 
+def gold_clv(cat, cfg, variant: str = OUTLIERS_INCLUDED) -> dict[str, pd.DataFrame]:
+    """The two lifetime-spend-tier tables, straight off the catalog.
+
+    Nothing is recomputed, for the same reason as `gold_transitions`: the tier
+    cut is a percentile over the whole customer base, so reproducing it here
+    would be a second definition of "top fifth" and the first thing to drift
+    when someone edits `clv_history`.
+
+    `median_spend_per_order` in particular could not be rebuilt here from the
+    other frames at all -- it needs every order joined to its customer's tier,
+    and `customers()` holds one row per customer. That is also why the outlier
+    exclusion has to be a published variant rather than a filter applied here:
+    a median cannot be adjusted after the fact, only recomputed.
+
+    `variant` picks the population. Both tables carry three rows per variant,
+    so NOT filtering would double every count on the page -- which is the one
+    hazard the new grain introduces, and the reason this raises instead of
+    returning whatever it finds.
+
+    Rows are ordered Top, Mid, Bottom. The gold table has no natural sort and
+    the tier is a string, so leaving it unordered puts Bottom first
+    alphabetically and every chart reads backwards.
+    """
+    def pick(frame: pd.DataFrame, table: str) -> pd.DataFrame:
+        if "outliers" not in frame.columns:
+            raise RuntimeError(
+                f"gold.{table} has no `outliers` column, so the volume-outlier "
+                f"toggle cannot be honoured. It predates that grain -- re-run "
+                f"`silver_to_gold --full --tables {table}`.")
+        kept = frame[frame.outliers == variant]
+        if kept.empty and not frame.empty:
+            raise RuntimeError(
+                f"gold.{table} carries no rows for outliers={variant!r}; it "
+                f"has {sorted(frame.outliers.unique())}")
+        return kept.drop(columns="outliers").reset_index(drop=True)
+
+    profile = pick(scan(cat, cfg, "gold", "clv_tier_profile"),
+                   "clv_tier_profile")
+    profile = _floats(profile, "pct_of_customers", "total_spend",
+                      "pct_of_spend", "pct_of_orders", "median_total_spend",
+                      "avg_total_spend", "spend_floor", "spend_ceiling",
+                      "avg_orders", "avg_spend_per_order",
+                      "median_spend_per_order", "one_order_pct",
+                      "avg_units_per_order")
+    segs = pick(scan(cat, cfg, "gold", "clv_tier_segments"),
+                "clv_tier_segments")
+    segs = _floats(segs, "pct_of_tier", "pct_of_segment", "total_spend",
+                   "pct_of_tier_spend", "median_total_spend", "avg_orders",
+                   "avg_customer_order_value", "vip_spend_cut")
+
+    rank = {t: i for i, t in enumerate(CLV_TIERS)}
+    profile = (profile.assign(_o=profile.clv_tier.map(rank))
+               .sort_values("_o").drop(columns="_o").reset_index(drop=True))
+    segs = (segs.assign(_o=segs.clv_tier.map(rank))
+            .sort_values(["_o", "customers"], ascending=[True, False])
+            .drop(columns="_o").reset_index(drop=True))
+    return {"clv_profile": profile, "clv_segments": segs}
+
+
 # --- the one entry point --------------------------------------------------
 
-def datasets(env: str = "prod") -> dict[str, pd.DataFrame]:
-    """Every frame the dashboard draws, from one read of the warehouse."""
+def datasets(env: str = "prod",
+             exclude_outliers: bool = False) -> dict[str, pd.DataFrame]:
+    """Every frame the dashboard draws, from one read of the warehouse.
+
+    `exclude_outliers` drops the three volume accounts from every aggregate on
+    the page. It is applied HERE, to `cust` and `orders`, rather than in each
+    chart: every derived frame below is computed from those two, so one filter
+    covers the whole page and a chart cannot be added later that silently
+    ignores the toggle. The two pre-aggregated CLV tables cannot be filtered
+    this way -- a published median is not adjustable -- so they carry the
+    variant as grain and `gold_clv` picks it.
+
+    The era tables (`transitions`, `loyalty_*`) are pre-aggregated and have no
+    such variant, so they do NOT honour the toggle. That is reported in `meta`
+    and said on the page rather than left for the reader to assume either way.
+    """
     cat, cfg = catalog(env)
 
     orders = per_order(cat, cfg)
     cust = customers(cat, cfg)
 
+    # Reported, never raised, like the two blocks at the end of this function.
+    # The flag is a recent addition to `customer_lifetime_value`, so a
+    # warehouse built before it should still draw the whole page with the
+    # toggle inert rather than fail on the first read.
+    try:
+        outliers = volume_outliers(cat, cfg)
+        # Their CURRENT 90-day segment, merged from the unfiltered `cust`
+        # before the exclusion below removes them from it. This is the part
+        # that makes the flag legible: two of the three are Slipping and one
+        # is long Dormant, which is why excluding them barely touches the
+        # 90-day figures but moves the lifetime ones.
+        outliers = outliers.merge(cust[["user_id", "segment"]],
+                                  on="user_id", how="left")
+        outliers["segment"] = outliers.segment.fillna("n/a")
+        outlier_state = "present"
+    except (NoSuchTableError, ValueError, KeyError) as exc:
+        outliers = pd.DataFrame(columns=[
+            "user_id", "total_orders", "total_lifetime_revenue",
+            "avg_order_value", "orders_per_active_day", "clv_segment",
+            "first_order_date", "last_order_date", "is_volume_outlier",
+            "segment"])
+        outlier_state = f"unavailable: {exc}"
+
     # The anchor the page reports is silver's own last order date, never
     # batch_date -- which is pinned to 2026-10-16 in the job arguments and
     # would claim data from the future.
+    #
+    # Taken BEFORE the exclusion below, deliberately. If one of the flagged
+    # accounts happened to hold the last order in silver, filtering first
+    # would move the anchor and shift every 90-day window on the page -- so
+    # the toggle would change the segmentation itself rather than just which
+    # customers are counted. The anchor is a property of the data, not of the
+    # reader's filter.
     anchor = max(orders.order_date)
+
+    excluded_ids = set(outliers.user_id) if exclude_outliers else set()
+    if excluded_ids:
+        orders = orders[~orders.user_id.isin(excluded_ids)]
+        cust = cust[~cust.user_id.isin(excluded_ids)]
 
     # gold was built at ITS anchor. If silver has moved on since the last Glue
     # run the two disagree, and every segment on the page is stale by that
@@ -361,6 +523,7 @@ def datasets(env: str = "prod") -> dict[str, pd.DataFrame]:
     frames.update(window_frames(cust, orders, anchor))
     frames.update(cadence_frames(cust))
     frames["reorder_cliff"] = reorder_cliff(orders, anchor)
+    frames["segment_sizes"] = segment_sizes(cust)
 
     active = cust[cust.is_active]
     frames["meta"] = pd.DataFrame([{
@@ -380,7 +543,19 @@ def datasets(env: str = "prod") -> dict[str, pd.DataFrame]:
         "spend_90d": round(float(active.spend_last90d.sum()), 2),
         "orders_90d": int(active.orders_last90d.sum()),
         "lifetime_revenue": round(float(cust.total_revenue.sum()), 2),
+        # The toggle's state and what it is worth, so the page can say what it
+        # is leaving out instead of quietly leaving it out. These three totals
+        # are of the FLAGGED accounts themselves and do not change with the
+        # toggle -- they are what was set aside, not what remains.
+        "outliers_excluded": bool(exclude_outliers) and bool(len(outliers)),
+        "outlier_flag": outlier_state,
+        "outlier_accounts": int(len(outliers)),
+        "outlier_orders": int(outliers.total_orders.sum()),
+        "outlier_revenue": round(float(outliers.total_lifetime_revenue.sum()), 2),
     }])
+
+    # Kept whole so the page can name the accounts and quote their rates.
+    frames["volume_outliers"] = outliers
 
     # The two anchored tables are published by Glue, so a repo cloned before
     # that job has run will not find them. Missing is reported, never raised:
@@ -402,5 +577,33 @@ def datasets(env: str = "prod") -> dict[str, pd.DataFrame]:
         frames["loyalty_by_segment"] = empty.copy()
         frames["loyalty_pooled"] = empty.copy()
         frames["meta"]["anchored_tables"] = f"missing: {exc}"
+
+    # A separate try, not folded into the one above: a missing CLV table must
+    # not report the anchored tables as missing too, and vice versa. They are
+    # published by different runs and either can be absent on its own.
+    try:
+        frames.update(gold_clv(
+            cat, cfg,
+            OUTLIERS_EXCLUDED if exclude_outliers else OUTLIERS_INCLUDED))
+        frames["meta"]["clv_tables"] = "present"
+    # RuntimeError as well as NoSuchTableError: `gold_clv` raises it when the
+    # tables exist but predate the `outliers` grain, which is a stale-warehouse
+    # problem with the same correct handling -- report it, draw the rest.
+    except (NoSuchTableError, RuntimeError) as exc:
+        frames["clv_profile"] = pd.DataFrame(columns=[
+            "clv_tier", "customers", "pct_of_customers", "total_spend",
+            "pct_of_spend", "median_total_spend", "avg_total_spend",
+            "spend_floor", "spend_ceiling", "total_orders", "avg_orders",
+            "median_orders", "avg_spend_per_order", "median_spend_per_order",
+            "one_order_pct", "median_tenure_days", "median_recency_days",
+            "pct_of_orders", "avg_units_per_order", "median_units_per_order",
+            "volume_outliers", "anchor_date"])
+        frames["clv_segments"] = pd.DataFrame(columns=[
+            "clv_tier", "segment", "segment_group", "customers",
+            "pct_of_tier", "pct_of_segment", "total_spend",
+            "pct_of_tier_spend", "median_total_spend", "avg_orders",
+            "median_orders", "avg_customer_order_value",
+            "volume_outliers", "vip_spend_cut", "anchor_date"])
+        frames["meta"]["clv_tables"] = f"missing: {exc}"
 
     return frames

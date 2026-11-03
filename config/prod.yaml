@@ -170,6 +170,15 @@ gold:
       total_orders: bigint
       clv_segment: string
       avg_order_value: decimal(10,2)
+      # The three volume accounts are FLAGGED here, never dropped: this is the
+      # grain of record, so a missing row would make the exclusion
+      # unmeasurable. The dashboard reads this flag to filter its own
+      # customer-grain frames, and clv_tier_profile / clv_tier_segments
+      # publish aggregates both with and without them. The rate is published
+      # beside it as the evidence for the judgement -- see clv_history, and
+      # note it is meaningless below a handful of orders.
+      is_volume_outlier: boolean
+      orders_per_active_day: decimal(10,4)
 
   # The 90-day activity window is measured from the order_items data,
   # not from batch_date.
@@ -428,3 +437,96 @@ gold:
       avg_orders_90d_t1: decimal(10,2)
       avg_spend_90d_t1: decimal(10,2)
       vip_spend_cut: decimal(18,2)
+
+  # Lifetime spend cut into fifths: Top (top 20%), Mid, Bottom (bottom 20%). The
+  # cut itself lives in transforms/clv_history.py, shared with
+  # customer_lifetime_value and clv_tier_segments, because a gold transform
+  # cannot read another gold table and three copies of a threshold drift.
+  #
+  # Three tiers x two populations ('included' / 'excluded'), six rows, with NO
+  # rollup row -- a fourth "All customers" row would make SUM(customers)
+  # return twice the base. Excluding the three volume accounts moves lifetime
+  # revenue -3.66% and the Top tier's spend share 76.59% -> 75.70%, and leaves
+  # every tier boundary exactly where it was. Only the Top tier's own median
+  # moves, by one cent, from percentile_approx over three fewer rows. Realised shares are 20.00 / 61.96 / 18.04, not 20/60/20: ties stay
+  # together under percent_rank and 475 customers at exactly $9.89 fall just
+  # inside Mid. pct_of_customers is published so that is visible.
+  #
+  # avg_spend_per_order and median_spend_per_order are ORDER grain, not the
+  # mean of per-customer averages. The median especially cannot be recovered
+  # from customer_lifetime_value's one-row-per-customer at all, which is why
+  # this table exists. Full rebuild, no event_time_column: a percentile over
+  # all history cannot be computed from one batch's rows.
+  clv_tier_profile:
+    depends_on: [order_items]
+    grain_keys: [clv_tier, outliers]
+    write: replace
+    output_columns:
+      clv_tier: string
+      # 'included' (every customer) or 'excluded' (without the three volume
+      # accounts). SIX rows, not three: the tiers partition the base only
+      # within one population, so a reader who groups by clv_tier alone and
+      # forgets this column double-counts. Pin it to one value first.
+      outliers: string
+      volume_outliers: bigint
+      customers: bigint
+      pct_of_customers: decimal(5,2)
+      total_spend: decimal(18,2)
+      pct_of_spend: decimal(5,2)
+      median_total_spend: decimal(18,2)
+      avg_total_spend: decimal(18,2)
+      spend_floor: decimal(18,2)
+      spend_ceiling: decimal(18,2)
+      total_orders: bigint
+      avg_orders: decimal(10,2)
+      median_orders: bigint
+      avg_spend_per_order: decimal(10,2)
+      median_spend_per_order: decimal(10,2)
+      one_order_pct: decimal(5,2)
+      median_tenure_days: int
+      median_recency_days: int
+      anchor_date: date
+
+  # The lifetime tier crossed against the 90-day RFM segment, twice over for
+  # the two outlier populations: 54 cells at most, and the only table that
+  # puts a lifetime measure beside a recent one. 2,367 Top-tier customers are
+  # currently Dormant holding 49.1% of all Top-tier lifetime spend, which is
+  # the finding this table exists to make visible.
+  # A Top-tier customer sitting in Dormant is past value with no present
+  # activity, which no single-window table can show.
+  #
+  # Dormant is INCLUDED here, unlike every other 90-day table, because
+  # lifetime spend does not go to zero when activity does -- that cell is the
+  # point of the table.
+  #
+  # Two percentages on purpose. pct_of_tier sums to 100 within a clv_tier
+  # (what the Top tier is made of); pct_of_segment sums to 100 within a
+  # segment (what share of VIPs have reached Top). Publishing one invites the
+  # other to be misread off it.
+  #
+  # vip_spend_cut is the LIVE cut at the anchor, matching customer_rfm, not
+  # the frozen bar the era tables share: this table compares nothing across
+  # time. Full rebuild, no event_time_column, unpartitioned.
+  clv_tier_segments:
+    depends_on: [order_items]
+    grain_keys: [clv_tier, segment, outliers]
+    write: replace
+    output_columns:
+      clv_tier: string
+      segment: string
+      # See clv_tier_profile. Each percentage is of its OWN population, so
+      # pct_of_tier sums to 100 within a (clv_tier, outliers) pair.
+      outliers: string
+      volume_outliers: bigint
+      segment_group: string
+      customers: bigint
+      pct_of_tier: decimal(5,2)
+      pct_of_segment: decimal(5,2)
+      total_spend: decimal(18,2)
+      pct_of_tier_spend: decimal(5,2)
+      median_total_spend: decimal(18,2)
+      avg_orders: decimal(10,2)
+      median_orders: bigint
+      avg_customer_order_value: decimal(10,2)
+      vip_spend_cut: decimal(18,2)
+      anchor_date: date
