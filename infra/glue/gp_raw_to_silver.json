@@ -19,6 +19,7 @@
     "--TempDir": "s3://globalpartners-project-cjk/glue-temp/",
     "--all": "\"\"",
     "--enable-metrics": "",
+    "--period": "2026-10-16",
     "--spark-event-logs-path": "s3://globalpartners-project-cjk/prod/sparkHistoryLogs/",
     "--enable-job-insights": "true",
     "--additional-python-modules": "__ARTIFACT_PREFIX__/globalpartners_pipeline-0.1.0-py3-none-any.whl",

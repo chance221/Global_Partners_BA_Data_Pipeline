@@ -22,16 +22,24 @@ aws:
 
 catalog:
   type: glue
-  warehouse: s3://globalpartners-project-cjk/prod/warehouse
+  # Demo warehouse, used for the walkthrough recording so every table is
+  # created from nothing on camera. The original is
+  # s3://globalpartners-project-cjk/prod/warehouse -- restore that line
+  # and the four layer names below to go back to it.
+  warehouse: s3://globalpartners-project-cjk/prod/warehouse_demo
 
 database:
   name: GlobalPartners
 
+# `raw` and `quarantine` are S3 path segments ({bucket}/{env}/{layer}/...).
+# `silver` and `gold` are BOTH path segments and Glue database names, created
+# on first write -- which is why changing them is what makes a run build from
+# an empty catalog rather than appending to the existing tables.
 layers:
-  raw: raw
-  silver: silver
-  gold: gold
-  quarantine: quarantine
+  raw: raw_demo
+  silver: silver_demo
+  gold: gold_demo
+  quarantine: quarantine_demo
 
 tables:
   date_dim:

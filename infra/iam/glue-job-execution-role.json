@@ -15,7 +15,9 @@
     "Statement": [
       {
         "Effect": "Allow",
-        "Principal": { "Service": "glue.amazonaws.com" },
+        "Principal": {
+          "Service": "glue.amazonaws.com"
+        },
         "Action": "sts:AssumeRole"
       }
     ]
@@ -26,11 +28,15 @@
       {
         "Sid": "ReadTheRawDataLake",
         "Effect": "Allow",
-        "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Action": [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ],
         "Resource": [
           "arn:aws:s3:::globalpartners-project-cjk",
           "arn:aws:s3:::globalpartners-project-cjk/local/raw/*",
-          "arn:aws:s3:::globalpartners-project-cjk/prod/raw/*"
+          "arn:aws:s3:::globalpartners-project-cjk/prod/raw/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/raw_demo/*"
         ]
       },
       {
@@ -45,24 +51,33 @@
         "Resource": [
           "arn:aws:s3:::globalpartners-project-cjk",
           "arn:aws:s3:::globalpartners-project-cjk/local/warehouse/*",
-          "arn:aws:s3:::globalpartners-project-cjk/prod/warehouse/*"
+          "arn:aws:s3:::globalpartners-project-cjk/prod/warehouse/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/warehouse_demo/*"
         ]
       },
       {
         "Sid": "WriteQuarantineAndRawOnIngest",
         "Effect": "Allow",
-        "Action": ["s3:PutObject", "s3:DeleteObject"],
+        "Action": [
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
         "Resource": [
           "arn:aws:s3:::globalpartners-project-cjk/local/raw/*",
           "arn:aws:s3:::globalpartners-project-cjk/prod/raw/*",
           "arn:aws:s3:::globalpartners-project-cjk/local/quarantine/*",
-          "arn:aws:s3:::globalpartners-project-cjk/prod/quarantine/*"
+          "arn:aws:s3:::globalpartners-project-cjk/prod/quarantine/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/raw_demo/*",
+          "arn:aws:s3:::globalpartners-project-cjk/prod/quarantine_demo/*"
         ]
       },
       {
         "Sid": "ReadTheDeployedArtifactsAndTempDir",
         "Effect": "Allow",
-        "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Action": [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ],
         "Resource": [
           "arn:aws:s3:::globalpartners-project-cjk/artifacts/*"
         ]
@@ -70,7 +85,11 @@
       {
         "Sid": "GlueTempDir",
         "Effect": "Allow",
-        "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
         "Resource": "arn:aws:s3:::globalpartners-project-cjk/glue-temp/*"
       },
       {
@@ -92,7 +111,11 @@
           "arn:aws:glue:us-east-1:__ACCOUNT_ID__:database/silver",
           "arn:aws:glue:us-east-1:__ACCOUNT_ID__:database/gold",
           "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/silver/*",
-          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/gold/*"
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/gold/*",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:database/silver_demo",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:database/gold_demo",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/silver_demo/*",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:table/gold_demo/*"
         ]
       },
       {
