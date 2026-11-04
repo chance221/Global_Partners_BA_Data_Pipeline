@@ -307,6 +307,81 @@ gold:
   # Descriptive, not causal: a calendar split cannot separate the program from
   # the January-2023 reprice or from the chain's own growth.
   # `loyalty_order_profile` is the within-person evidence.
+  # Order rate in 30-day periods around each customer's OWN enrollment date,
+  # which is the only framing in which "did they order more often" is
+  # answerable. loyalty_order_profile splits a switcher's orders by FLAG, and
+  # the unflagged side spans years against months for the flagged side, so
+  # orders-per-customer falls after joining for reasons that are purely window
+  # length -- 13.24 against 7.42, the program looking harmful on an artifact.
+  #
+  # Period 0 is the JOIN DAY ALONE, one day wide, because the join date is by
+  # definition a day the customer ordered. Folding it into the first post
+  # period would hand that side a guaranteed order and manufacture a lift.
+  # window_days carries 1 there and 30 elsewhere.
+  #
+  # coverage_days is the half-width the data must actually cover either side
+  # of a join date, published at both 90 and 180. The populations OVERLAP --
+  # the 180 cohort is a subset of the 90 cohort -- so summing across
+  # coverage_days double-counts. Both ship because the trade is real: 180
+  # reaches far enough to show whether a lift persists but admits only early
+  # joiners; 90 keeps more customers and stops while the effect is still
+  # elevated. customers is constant within a coverage_days population.
+  #
+  # Additive across periods within one coverage_days (orders, total_revenue,
+  # line_items, units, active_days), so a +/-90 reading is periods -3..-1 and
+  # 1..3 summed, on a cohort held constant. median_order_value is not.
+  #
+  # Full rebuild: a period index is relative to each customer's join date, so
+  # an incremental slice cannot know which period an order belongs to without
+  # seeing that customer's whole history. 20 rows, so unpartitioned.
+  loyalty_join_profile:
+    depends_on: [order_items]
+    grain_keys: [coverage_days, period_index]
+    write: replace
+    output_columns:
+      coverage_days: int
+      period_index: int
+      period_start_day: int
+      period_end_day: int
+      window_days: int
+      customers: bigint
+      orders: bigint
+      line_items: bigint
+      units: bigint
+      total_revenue: decimal(18,2)
+      # The flagged volume accounts' PORTION of each additive measure, so the
+      # excluded reading is `measure - outlier_measure` at any rollup and the
+      # dashboard's toggle works on this table rather than skipping it. Not a
+      # rounding error here: two accounts place 94, 93, 88, 76 and 64 orders
+      # on single days in Jan-Feb 2023, and in period -2 the twenty heaviest
+      # customer-days are 30.2% of that period's orders. Who is flagged comes
+      # from clv_history, so the floor lives in one place.
+      #
+      # customers and active_days subtract cleanly too -- a customer-day
+      # belongs to exactly one customer. avg_order_value does NOT: recompute
+      # it as (total_revenue - outlier_revenue) / (orders - outlier_orders).
+      # median_order_value cannot be netted at all.
+      outlier_customers: bigint
+      outlier_orders: bigint
+      outlier_line_items: bigint
+      outlier_units: bigint
+      outlier_revenue: decimal(18,2)
+      outlier_active_days: bigint
+      # Distinct customer-days, which is what separates "comes back more
+      # often" from "orders more per visit". The two move independently and
+      # on this data they move in opposite directions.
+      active_days: bigint
+      orders_per_customer: decimal(10,4)
+      # The only measure comparable across every row, the one-day join
+      # period included.
+      orders_per_customer_per_day: decimal(12,6)
+      active_days_per_customer: decimal(10,4)
+      # Null, not zero, on a period with no orders: no visits to average
+      # over is not the same as one order per visit.
+      orders_per_active_day: decimal(10,4)
+      avg_order_value: decimal(10,2)
+      median_order_value: decimal(10,2)
+
   loyalty_era_profile:
     depends_on: [order_items]
     grain_keys: [era, segment]
@@ -586,8 +661,3 @@ gold:
       outlier_line_items: bigint
       outlier_units: bigint
       outlier_revenue: decimal(18,2)
-      # True where any line in the cell came from a DEVELOPMENT app. Not
-      # filtered out, so this table still ties to the rest of the warehouse,
-      # but flagged: the dev traffic is one whole store that peaks at 1am and
-      # would read as a real 24-hour site on a staffing chart.
-      is_development: boolean

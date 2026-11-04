@@ -2,11 +2,7 @@
 # supplies the {env} segment of the S3 path). Nothing here is secret: the DB
 # password lives in Secrets Manager and secret_name is only a lookup key.
 #
-# The tables: and gold: sections below duplicate local.yaml. config_loader has
-# no inheritance between environments -- each file stands alone -- so a contract
-# change has to be made in both. Deliberate for now (one file is the whole
-# truth for an environment, and a prod run cannot be changed by editing local),
-# but it is the first thing to revisit if a third environment appears.
+
 
 aws:
   region: us-east-1
@@ -74,24 +70,12 @@ tables:
     silver_transforms:
       creation_time_utc: timestamp
       item_price: decimal(10,2)
-    # Category VALUES arrive textually broken from the source POS admin tools.
-    # silver_transforms above fixes types; this fixes content. Applied in the
-    # order listed, each pattern seeing the previous one's output.
     silver_cleaners:
-      item_category:
-        # An admin-console URL pasted into the category field -- sometimes
-        # MID-WORD: "Drip C<url>offee". Excised and rejoined, NOT truncated:
-        # cutting at https would yield "Drip C" and invent a 46th category.
-        # Non-greedy to the first '#', which is where every one of these ends.
+      item_category:        
         - ['https?://[^#]*#', '']
-        # Stray keystrokes that split one real category in two. Anchored, so a
-        # legitimate name that merely contains the text is left alone.
         - ['^Bowls0$', 'Bowls']
         - ['^Sandwiches`1$', 'Sandwiches']
         - ['^Sqalads$', 'Salads']
-        # One category spelled two ways by different restaurants. This is a
-        # judgement call, not a repair -- the variants above are unambiguous
-        # corruption, this one merges 1,158 rows into a different label.
         - ["^Kids$", "Kid's"]
     # Rows silver does not carry at all. silver_cleaners above repairs a value;
     # this drops the row. The one entry is the `Alltown Fresh - DEVELOPMENT`
@@ -102,15 +86,7 @@ tables:
     # Filtered rather than flagged because the cut is a clean partition -- no
     # order mixes dev and non-dev lines and none of those 115 users ever
     # ordered on a real store -- so no surviving customer's lifetime, cadence
-    # or segment is recomputed from a truncated history. Flagging would have
-    # meant threading a column through all 13 gold transforms; this is one
-    # place. Contrast `customer_lifetime_value.is_volume_outlier`, which stays
-    # a FLAG because whether those three accounts are real customers is a
-    # judgement that has to remain arguable. A non-production app name is not a
-    # judgement, and 17 of its users were sitting in the Top lifetime tier.
-    #
-    # Note `Alltown Neighborhood Perks` is NOT filtered: it is a real app on
-    # real stores that also carry main-app traffic. app_name has three values.
+    # or segment is recomputed from a truncated history.
     silver_filters:
       app_name: ['(?i)DEVELOPMENT']
     watermark_column: inserted_at
@@ -142,9 +118,7 @@ tables:
 #
 # event_time_column drives the incremental read: a run finds which event dates
 # this batch touched, recomputes those dates completely from all of silver, and
-# replaces them. Recomputing rather than accumulating is what keeps non-additive
-# measures (distinct counts, averages) correct. Omit it to rebuild the whole
-# table every run.
+# replaces them. 
 gold:
   daily_restaurant_sales:
     depends_on: [order_items]
@@ -162,10 +136,7 @@ gold:
       week_start: date
 
   # No event_time_column on purpose: a rank over all history cannot be built
-  # from an incremental slice, so every run rebuilds this table in full. Cheap
-  # -- the output is one row per restaurant. `replace` rather than
-  # delete_insert so a restaurant that stops trading cannot keep a stale rank.
-  # Unpartitioned for the same reason: there is not enough of it to split.
+  # from an incremental slice, so every run rebuilds this table in full.
   restaurant_revenue_rank:
     depends_on: [order_items]
     grain_keys: [restaurant_id]
@@ -178,8 +149,7 @@ gold:
 
   # Full rebuild every run, which is cheap at one row per customer
   # With the current volume.
-  #`replace` so a customer who stops ordering cannot
-  # keep a stale segment.
+
   customer_lifetime_value:
     depends_on: [order_items]
     grain_keys: [user_id]
@@ -190,13 +160,6 @@ gold:
       total_orders: bigint
       clv_segment: string
       avg_order_value: decimal(10,2)
-      # The three volume accounts are FLAGGED here, never dropped: this is the
-      # grain of record, so a missing row would make the exclusion
-      # unmeasurable. The dashboard reads this flag to filter its own
-      # customer-grain frames, and clv_tier_profile / clv_tier_segments
-      # publish aggregates both with and without them. The rate is published
-      # beside it as the evidence for the judgement -- see clv_history, and
-      # note it is meaningless below a handful of orders.
       is_volume_outlier: boolean
       orders_per_active_day: decimal(10,4)
 
@@ -281,10 +244,7 @@ gold:
   # confounded by who chooses to enrol. "Observed in both states", Pre-member
   # against Member, is a CHANGE within the same customers and is not. Carrying
   # both is what lets the two be told apart.
-  #
-  # No per-28-day rate here on purpose: every measure is already a ratio per
-  # order, so none of them needs normalising for how long a customer was
-  # observed.
+
   loyalty_order_profile:
     depends_on: [order_items]
     grain_keys: [population, membership_state]
@@ -316,19 +276,86 @@ gold:
   # 330, and orders per customer accumulates with observation time. On equal
   # windows the same measure reads 4.29 against 4.69 and the sign flips.
   #
-  # Rows OVERLAP, like loyalty_order_profile: every order is counted once
-  # under its segment and once under `All customers`, so summing total_revenue
-  # over this table reports twice the business. The `All customers` rows are
-  # the era totals.
   #
   # Full rebuild. There is no event_time_column because a slice of a batch
   # cannot say which era it belongs to without seeing where the program
   # started, and `replace` so a segment nobody occupies any more cannot keep a
   # stale row. 18 rows, so unpartitioned.
+  # Order rate in 30-day periods around each customer's OWN enrollment date,
+  # which is the only framing in which "did they order more often" is
+  # answerable. loyalty_order_profile splits a switcher's orders by FLAG, and
+  # the unflagged side spans years against months for the flagged side, so
+  # orders-per-customer falls after joining for reasons that are purely window
+  # length -- 13.24 against 7.42, the program looking harmful on an artifact.
   #
-  # Descriptive, not causal: a calendar split cannot separate the program from
-  # the January-2023 reprice or from the chain's own growth.
-  # `loyalty_order_profile` is the within-person evidence.
+  # Period 0 is the JOIN DAY ALONE, one day wide, because the join date is by
+  # definition a day the customer ordered. Folding it into the first post
+  # period would hand that side a guaranteed order and manufacture a lift.
+  # window_days carries 1 there and 30 elsewhere.
+  #
+  # coverage_days is the half-width the data must actually cover either side
+  # of a join date, published at both 90 and 180. The populations OVERLAP --
+  # the 180 cohort is a subset of the 90 cohort -- so summing across
+  # coverage_days double-counts. Both ship because the trade is real: 180
+  # reaches far enough to show whether a lift persists but admits only early
+  # joiners; 90 keeps more customers and stops while the effect is still
+  # elevated. customers is constant within a coverage_days population.
+  #
+  # Additive across periods within one coverage_days (orders, total_revenue,
+  # line_items, units, active_days), so a +/-90 reading is periods -3..-1 and
+  # 1..3 summed, on a cohort held constant. median_order_value is not.
+  #
+  # Full rebuild: a period index is relative to each customer's join date, so
+  # an incremental slice cannot know which period an order belongs to without
+  # seeing that customer's whole history. 20 rows, so unpartitioned.
+  loyalty_join_profile:
+    depends_on: [order_items]
+    grain_keys: [coverage_days, period_index]
+    write: replace
+    output_columns:
+      coverage_days: int
+      period_index: int
+      period_start_day: int
+      period_end_day: int
+      window_days: int
+      customers: bigint
+      orders: bigint
+      line_items: bigint
+      units: bigint
+      total_revenue: decimal(18,2)
+      # The flagged volume accounts' PORTION of each additive measure, so the
+      # excluded reading is `measure - outlier_measure` at any rollup and the
+      # dashboard's toggle works on this table rather than skipping it. Not a
+      # rounding error here: two accounts place 94, 93, 88, 76 and 64 orders
+      # on single days in Jan-Feb 2023, and in period -2 the twenty heaviest
+      # customer-days are 30.2% of that period's orders. Who is flagged comes
+      # from clv_history, so the floor lives in one place.
+      #
+      # customers and active_days subtract cleanly too -- a customer-day
+      # belongs to exactly one customer. avg_order_value does NOT: recompute
+      # it as (total_revenue - outlier_revenue) / (orders - outlier_orders).
+      # median_order_value cannot be netted at all.
+      outlier_customers: bigint
+      outlier_orders: bigint
+      outlier_line_items: bigint
+      outlier_units: bigint
+      outlier_revenue: decimal(18,2)
+      outlier_active_days: bigint
+      # Distinct customer-days, which is what separates "comes back more
+      # often" from "orders more per visit". The two move independently and
+      # on this data they move in opposite directions.
+      active_days: bigint
+      orders_per_customer: decimal(10,4)
+      # The only measure comparable across every row, the one-day join
+      # period included.
+      orders_per_customer_per_day: decimal(12,6)
+      active_days_per_customer: decimal(10,4)
+      # Null, not zero, on a period with no orders: no visits to average
+      # over is not the same as one order per visit.
+      orders_per_active_day: decimal(10,4)
+      avg_order_value: decimal(10,2)
+      median_order_value: decimal(10,2)
+
   loyalty_era_profile:
     depends_on: [order_items]
     grain_keys: [era, segment]
@@ -376,20 +403,6 @@ gold:
 
   # Where each segment's customers ended up 180 days later, as a share of each
   # origin row -- so row_pct sums to 100 across every (era, seg_t0).
-  #
-  # Three eras, and the anchors differ IN KIND. Recent and Prior roll with the
-  # data, because "the last 180 days" is a rolling question. Pre-launch is
-  # anchored to the program's first flagged order, a fixed historical event, so
-  # it never moves and the before-and-after stays comparable as later batches
-  # extend the data. T0 and T1 are published per row so a reader can see which
-  # anchors produced a number instead of assuming the intended ones.
-  #
-  # `New Growth` and `Never Returned` are STRUCTURAL ZEROS in every row, not
-  # measured results: New Growth needs tenure <= 30 days, impossible for a
-  # customer who already existed at T0, and Never Returned needs a single
-  # lifetime order, which puts recency past 180 days so the Dormant branch
-  # catches them first. Kept as destinations so row_pct visibly sums to 100.
-  #
   # Full rebuild, no event_time_column: a slice of one batch cannot say what a
   # customer looked like 180 days before it. At most 9 x 7 x 3 rows, so
   # unpartitioned, and `replace` so an origin nobody occupies any more cannot
@@ -423,21 +436,7 @@ gold:
   #   loyalty_order_profile  within-customer split, calendar floats
   #   this table             membership split, calendar fixed, mix floats
   #
-  # Membership is taken AS OF T0, never from all history: reading it from all
-  # history files a customer who enrolled mid-window as a member throughout and
-  # credits the program with the period before they joined.
-  #
-  # Rows OVERLAP. Every customer is counted once under their T0 segment and
-  # once under `All customers`, so summing `customers` over this table reports
-  # twice the base. The pooled rows are published BECAUSE they mislead:
-  # members concentrate in the segments that retain well anyway, so the pooled
-  # gap is mostly composition and overstates the within-segment effect several
-  # times over. Read the per-segment rows; the pooled row is what they correct.
-  #
-  # Not causal either. Enrolment is a choice, so members differ from
-  # non-members in ways no column here captures -- a customer who signs up was
-  # likelier to return anyway. This table bounds the effect, it does not
-  # identify it.
+  
   loyalty_cohort_outcomes:
     depends_on: [order_items]
     grain_keys: [cohort, seg_t0]
@@ -463,20 +462,7 @@ gold:
   # customer_lifetime_value and clv_tier_segments, because a gold transform
   # cannot read another gold table and three copies of a threshold drift.
   #
-  # Three tiers x two populations ('included' / 'excluded'), six rows, with NO
-  # rollup row -- a fourth "All customers" row would make SUM(customers)
-  # return twice the base. Excluding the three volume accounts moves lifetime
-  # revenue -3.66% and the Top tier's spend share 76.59% -> 75.70%, and leaves
-  # every tier boundary exactly where it was. Only the Top tier's own median
-  # moves, by one cent, from percentile_approx over three fewer rows. Realised shares are 20.00 / 61.96 / 18.04, not 20/60/20: ties stay
-  # together under percent_rank and 475 customers at exactly $9.89 fall just
-  # inside Mid. pct_of_customers is published so that is visible.
-  #
-  # avg_spend_per_order and median_spend_per_order are ORDER grain, not the
-  # mean of per-customer averages. The median especially cannot be recovered
-  # from customer_lifetime_value's one-row-per-customer at all, which is why
-  # this table exists. Full rebuild, no event_time_column: a percentile over
-  # all history cannot be computed from one batch's rows.
+
   clv_tier_profile:
     depends_on: [order_items]
     grain_keys: [clv_tier, outliers]
@@ -608,8 +594,3 @@ gold:
       outlier_line_items: bigint
       outlier_units: bigint
       outlier_revenue: decimal(18,2)
-      # True where any line in the cell came from a DEVELOPMENT app. Not
-      # filtered out, so this table still ties to the rest of the warehouse,
-      # but flagged: the dev traffic is one whole store that peaks at 1am and
-      # would read as a real 24-hour site on a staffing chart.
-      is_development: boolean

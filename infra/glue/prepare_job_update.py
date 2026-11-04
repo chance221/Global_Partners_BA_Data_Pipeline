@@ -61,6 +61,25 @@ def _walk_strings(node, fn):
                 _walk_strings(value, fn)
 
 
+def derive_prefix(job: dict) -> str | None:
+    """The artifact prefix the job currently points at, read off ScriptLocation.
+
+    Every ScriptLocation is `<prefix>/glue_jobs/<job>.py`, so the prefix is
+    whatever precedes `/glue_jobs/` -- no guessing required.
+
+    This exists because guessing was wrong in a way that corrupted the repo.
+    `--real-prefix` defaults to `artifacts/manual`, which is right only until
+    the first CI deploy repoints the live jobs at `artifacts/<sha>`. From then
+    on a capture matched nothing, templated nothing, and wrote the SHA-pinned
+    paths back into the committed file -- which the next deploy would then send
+    to update-job verbatim, freezing all three jobs on that one old build.
+    There was a warning, and a warning was not enough.
+    """
+    location = (job.get("Command") or {}).get("ScriptLocation") or ""
+    head, sep, _tail = location.partition("/glue_jobs/")
+    return head if sep else None
+
+
 def capture(job: dict, real_prefix: str, account_id: str | None = None) -> dict:
     """get-job output -> a committable JobUpdate with identifiers templated.
 
@@ -72,6 +91,14 @@ def capture(job: dict, real_prefix: str, account_id: str | None = None) -> dict:
     removed = [f for f in READ_ONLY_FIELDS if f in job]
     for field in removed:
         del job[field]
+
+    # Prefer what the job actually says over what the caller guessed.
+    derived = derive_prefix(job)
+    if derived and derived != real_prefix:
+        print(f"NOTE: job points at {derived!r}, not the requested "
+              f"{real_prefix!r} -- templating what the job actually uses",
+              file=sys.stderr)
+        real_prefix = derived
 
     hits = 0
 
@@ -102,8 +129,14 @@ def capture(job: dict, real_prefix: str, account_id: str | None = None) -> dict:
           file=sys.stderr)
     print(f"templated {hits} path(s) containing {real_prefix!r}", file=sys.stderr)
     if not hits:
-        print("WARNING: prefix not found -- check --real-prefix matches the job",
-              file=sys.stderr)
+        # Fatal, not advisory. Writing this file would commit a build-pinned
+        # path and silently freeze the job on the next deploy.
+        raise SystemExit(
+            f"ERROR: nothing templated. No value contains {real_prefix!r} and "
+            f"ScriptLocation ({(job.get('Command') or {}).get('ScriptLocation')!r}) "
+            f"does not contain '/glue_jobs/', so the prefix could not be "
+            f"derived either. Refusing to write a build-pinned file."
+        )
     return job
 
 

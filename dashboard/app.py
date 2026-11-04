@@ -60,11 +60,7 @@ st.set_page_config(page_title="Customer Segmentation",
 
 # Segments ordered by the recency band their own definitions force, so every
 # chart stacks them identically and one segment can be tracked down the page.
-# The tab LABELS, kept as constants because the page copy cross-references
-# them by name. They used to be referenced by position -- "the first tab",
-# "the last tab" -- which a reorder silently falsifies, and did. A name
-# cannot go stale that way. Defined up here rather than beside `st.tabs`
-# because the not-yet-published warnings above the tabs name them too.
+
 TAB_CLV = "Customer Lifetime Value"
 TAB_VALUE = "Where the Value Is"
 TAB_PROGRAM = "Is the program working"
@@ -82,11 +78,7 @@ CLIFF_ORDER = ["same day", "1-3 days", "4-7 days", "8-14 days",
 # order every chart below uses. This is the page's legend: the segmentation is
 # the only dimension on every tab, so the definitions belong once at the top
 # rather than restated per chart.
-#
-# Transcribed from the CASE in `customer_rfm.py`, which is evaluated top to
-# bottom with the first match winning. Anything edited there has to be edited
-# here -- there is no test tying the two together, because prose cannot be
-# asserted against a CASE expression.
+
 SEGMENT_DEFS = [
     ("VIP", "Core",
      "Two or more orders in the **last 30 days**, at least one more in days "
@@ -129,14 +121,7 @@ SEGMENT_DEFS = [
      "their window figures are zero by construction."),
 ]
 
-# `ramp` is the ordinal scale the revenue pie uses: ONE hue, monotone
-# lightness, eight steps. Not categorical hues -- the slices are sorted by
-# share, so lightness is carrying magnitude, and eight distinguishable
-# categorical hues would need a palette this project has never validated.
-# Both ramps clear the dataviz ordinal checks against their own surface
-# (monotone L, adjacent dL >= 0.06, light end >= 2:1):
-#   light  #7cbbf0 at 2.00:1, hue spread 17 degrees
-#   dark   #085076 at 2.01:1, hue spread 3 degrees
+
 _LIGHT = {"surface": "#fcfcfb", "ink": "#0b0b0b", "ink2": "#52514e",
           "grid": "#e6e5e1", "s1": "#2a78d6", "s2": "#eb6834",
           "critical": "#d03b3b", "good": "#0ca30c", "muted": "#9a9893",
@@ -152,17 +137,7 @@ _DARK = {"surface": "#1a1a19", "ink": "#f0efec", "ink2": "#c3c2b7",
 def theme_base() -> str:
     """The theme the VIEWER is actually seeing, not the one in config.
 
-    `st.get_option("theme.base")` returns the *configured* theme, which is
-    None unless someone has written `.streamlit/config.toml`. So on a dark
-    page it reported "light", every chart took the light steps, and the
-    titles rendered in #0b0b0b ink on a #1a1a19 background -- legible nowhere.
-    The chart area itself was filled light by `configure_view`, which is why
-    the plot bodies looked right while the text around them did not.
-
-    `st.context.theme.type` is resolved in the browser and reports what is on
-    screen, including the "follow the system setting" case that has no config
-    value at all. Streamlit reruns the script when it changes, so the charts
-    repaint on a theme switch.
+    
     """
     try:
         resolved = st.context.theme.type
@@ -181,9 +156,6 @@ def theme_base() -> str:
 def palette() -> dict:
     """Light or dark steps, picked from the theme on screen.
 
-    Dark mode is a separate validated set of steps, not an automatic flip of
-    the light ones -- the same hex that clears 3:1 on #fcfcfb does not
-    necessarily clear it on #1a1a19.
     """
     return _DARK if theme_base() == "dark" else _LIGHT
 
@@ -191,17 +163,7 @@ def palette() -> dict:
 def ramp(n: int) -> list[str]:
     """`n` steps of the validated ordinal ramp, MOST PROMINENT FIRST.
 
-    Sliced from the eight-step ramp rather than regenerated, so the two steps
-    that were actually checked against the surface -- the lightest and the
-    darkest -- are always the two in use. Fewer categories therefore means
-    wider gaps between steps, never a narrower span.
-
-    The stored ramp runs light to dark. Which end is *prominent* depends on
-    the surface: the dark end stands out on #fcfcfb and recedes on #1a1a19.
-    So the light-mode list is reversed and the dark-mode list is not, and a
-    caller can hand the first step to its largest value in either theme.
-    Without this the biggest slice of the revenue pie came out the palest one
-    in light mode, which inverts the whole encoding.
+ 
     """
     full = palette()["ramp"]
     steps = (full[:n] if n >= len(full) or n < 2
@@ -210,16 +172,7 @@ def ramp(n: int) -> list[str]:
     return steps if theme_base() == "dark" else steps[::-1]
 
 
-# Steps in the matrix shading below. Six is measured, not a round number: it
-# is the step count whose WORST cell contrast is the highest in both themes at
-# once -- light 5.38:1 and dark 4.46:1, against 5.05/4.42 for every other
-# count from 4 to 9. Dark mode cannot do better than about 4.4 at the ramp's
-# mid-tones, where both ink ends are equally far away, so its two crossover
-# steps sit a hair under the 4.5:1 AA floor whatever the sampling.
-#
-# Acceptable HERE and not in a chart: every cell prints its own value, so the
-# shade is a second encoding of a number already written in text rather than
-# the only way to read it.
+
 _SHADE_STEPS = 6
 
 
@@ -240,11 +193,7 @@ def _contrast(fg: str, bg: str) -> float:
 def _ink_for(bg: str, p: dict) -> str:
     """Whichever of the two ink ends actually reads against `bg`.
 
-    Picked by measured contrast with the cell's own background, not by where
-    the cell's value sits in its range. Those are not the same test and the
-    difference is visible: this ramp spans most of the lightness axis, so the
-    step in the MIDDLE of it is already dark enough to need light ink, and
-    flipping at the halfway value put near-black text on a navy cell.
+    
     """
     return max((p["ink"], p["surface"]), key=lambda ink: _contrast(ink, bg))
 
@@ -252,39 +201,7 @@ def _ink_for(bg: str, p: dict) -> str:
 def shaded(frame: pd.DataFrame, *, axis: int | None, fmt: str = "{:.2f}"):
     """A numeric matrix with every cell shaded by its magnitude.
 
-    A one-hue sequential ramp from `palette()`, with the value printed in
-    every cell, so colour is a second encoding of something already written
-    in text and never the only way to read a cell. That is the encoding the
-    tier-by-segment heatmap carried before this table replaced it; what
-    changed is the order of priority, with the exact figures leading and the
-    shape following behind them.
-
-    Hand-rolled rather than `Styler.background_gradient`, which needs
-    matplotlib. A plotting stack is a steep dependency for a page whose whole
-    premise is that it runs with no JVM on a small instance, and it would not
-    read `palette()` anyway, so the table would drift from every chart beside
-    it on a theme change.
-
-    `axis` is the direction the percentages sum to 100 in -- 1 for row
-    percentages, 0 for column percentages -- so a shade only ever compares
-    cells that share a denominator. Shading the other way round would rank a
-    tier's 58% against a segment's 4% as though they were one measure.
-
-    `axis=None` shades against the largest cell in the WHOLE frame instead,
-    which is the right reading when every cell shares one denominator. A
-    staffing grid compares Friday 11am against Monday 3pm directly; shading
-    it row by row would give every weekday its own private scale and make
-    each one's quietest hour look equally dead.
-
-    Scaled from zero to the largest value along that axis, not min-to-max:
-    under min-to-max the smallest cell in every line is forced to the palest
-    step whatever it holds, which makes an 18% read like an empty cell.
-
-    BOTH colours are set on every cell, the ink by `_ink_for` against that
-    cell's own background. Streamlit takes a dataframe's text colour from the
-    active theme, so a background set without an ink is unreadable in one of
-    the two themes -- and which end of the ramp goes pale swaps between them,
-    so neither ink can be hard-coded.
+   
     """
     p = palette()
     # `ramp` hands its first step to the largest value in either theme, so
@@ -670,10 +587,7 @@ if not _outliers.empty:
             "threshold itself lives in `clv_history.OUTLIER_ORDER_FLOOR` and "
             "is not repeated here, so the page cannot drift from the rule it "
             "is describing. The ranked counts run 2124, 1803, 1000, then 799, "
-            "so any floor between 800 and 1000 isolates exactly these three. "
-            "`orders/day` is shown as the evidence, not as the rule: it is "
-            "meaningless for a one-order customer, whose span is a single day "
-            "and whose rate is therefore exactly 1.00.")
+            "so any floor between 800 and 1000 isolates exactly these three. ")
         st.warning(
             "**A percentile rule would be wrong here.** A p99 cut on lifetime "
             "spend flags 202 customers holding 26.7% of revenue, 64 of them "
@@ -697,13 +611,6 @@ if not _outliers.empty:
             f"it lets the reader confirm that rather than take it on trust.",
             icon=":material/function:")
 
-st.info(
-    f"**Dormant customers are excluded throughout.** All "
-    f"{int(meta.all_customers) - int(meta.active_customers):,} of them have "
-    f"`orders_last90d = 0` and `spend_last90d = 0` by definition, which is "
-    f"what `is_active` exists to express. Lifetime figures, where shown, say "
-    f"so.",
-    icon=":material/filter_alt:")
 
 # Lifetime value leads. It defines the tiers the 90-day segments are read
 # against, and it is where "revenue is repeat orders, not bigger baskets" is
@@ -1324,9 +1231,21 @@ with tab_clv:
 # --- 3. is the program working -------------------------------------------
 
 with tab_program:
-    st.subheader("Two readings of the loyalty program, and they disagree in scale")
-
     trans = load("transitions")
+
+    # Read from the warehouse, not written in: `Pre-launch`'s t1 IS the
+    # program's first flagged order, which is the anchor every era on this tab
+    # is measured from. Hardcoding the date would let the page and the eras
+    # disagree after a rebuild, and the launch is the one fact here that a
+    # reader needs before any of the three findings mean anything.
+    _launch = None
+    if not trans.empty and trans.era.eq("Pre-launch").any():
+        _launch = trans.loc[trans.era.eq("Pre-launch"), "t1"].iloc[0]
+    _launched = f"Loyalty launched {_launch}. " if _launch else ""
+    st.subheader(f"{_launched}The same people visit more often after "
+                 f"enrolling; members retain better; the totals have not "
+                 f"moved. All three are true")
+
     if trans.empty:
         st.info(
             "Nothing to show until `customer_segment_transitions` and "
@@ -1342,13 +1261,19 @@ with tab_program:
     # not a dashboard one.
     if bool(meta.outliers_excluded):
         st.warning(
-            f"**This tab still includes the {int(meta.outlier_accounts)} "
-            f"volume accounts**, unlike the rest of the page. The era and "
-            f"cohort tables are published pre-aggregated at segment grain, so "
-            f"they carry no outlier variant for the sidebar toggle to select. "
-            f"The effect is small -- the three accounts are 0.04% of "
-            f"trailing-90-day revenue -- but it is a real inconsistency "
-            f"between this tab and the others while the toggle is on.",
+            f"**The era and cohort tables on this tab still include the "
+            f"{int(meta.outlier_accounts)} volume accounts**, unlike the rest "
+            f"of the page: they are published pre-aggregated at segment "
+            f"grain, so they carry no outlier variant for the sidebar toggle "
+            f"to select. That covers the paired-dot charts in sections 2 and "
+            f"3, where the effect is small -- the three accounts are 0.04% "
+            f"of trailing-90-day revenue. Everything else here DOES honour "
+            f"the toggle: section 1 because `loyalty_join_profile` publishes "
+            f"each account's portion of every additive measure, and the "
+            f"90-day comparison at the end of section 2 because it is "
+            f"computed from silver order grain rather than read from a "
+            f"published aggregate. In section 1 the effect is not small, and "
+            f"the note under its chart says what it is.",
             icon=":material/filter_alt:")
 
     # New Growth and Never Returned are structurally unreachable as
@@ -1365,7 +1290,431 @@ with tab_program:
     seg_order = [s for s in SEGMENT_ORDER + ["Dormant"]
                  if s in set(trans.seg_t0)]
 
-    st.markdown("##### 1. Calendar comparison: two 180-day spans, one each side of launch")
+    # --- 1. the within-person rate ----------------------------------------
+    #
+    # Reads `gold.loyalty_join_profile`, which is anchored to each customer's
+    # OWN join date rather than to a calendar date. That is what removes the
+    # artifact sitting underneath `loyalty_order_profile`: splitting a
+    # switcher's orders by FLAG gives the unflagged side years and the
+    # flagged side months, and orders-per-customer then falls after
+    # enrollment for reasons that are purely exposure length.
+    st.markdown("##### 1. Within the same people: the rate around their own "
+                "join date")
+
+    join = load("join_profile")
+
+    if join.empty:
+        st.warning(
+            f"**The join-profile table is not published yet.** Run:  `python "
+            f"-m python_scripts.silver_to_gold.silver_to_gold --env prod "
+            f"--full --tables loyalty_join_profile`  "
+            f"({meta.join_profile_table})",
+            icon=":material/table_rows:")
+    else:
+        _cov_label = st.radio(
+            "Window either side of the join date",
+            [f"{c} days" for c in warehouse.JOIN_COVERAGE],
+            horizontal=True, key="join_coverage",
+            help="A customer only appears if the data covers the whole window "
+                 "either side of their join date, so the wider window holds "
+                 "fewer -- and only earlier joiners. The two populations "
+                 "overlap: the 180-day cohort is a subset of the 90-day one.")
+        _cov = int(_cov_label.split()[0])
+        _half = _cov // 30
+        _jp = (join[join.coverage_days == _cov]
+               .sort_values("period_index"))
+        _n = int(_jp.customers.iloc[0])
+        _pre = _jp[_jp.period_index.between(-_half, -1)]
+        _post = _jp[_jp.period_index.between(1, _half)]
+
+        def _per_customer(column: str) -> tuple[float, float, float]:
+            """Before, after, and the percentage change, all per customer."""
+            before = float(_pre[column].sum()) / max(_n, 1)
+            after = float(_post[column].sum()) / max(_n, 1)
+            return before, after, 100.0 * (after / max(before, 1e-9) - 1)
+
+        _o_pre, _o_post, _o_lift = _per_customer("orders")
+        _v_pre, _v_post, _v_lift = _per_customer("active_days")
+        _opv_pre = (float(_pre.orders.sum())
+                    / max(float(_pre.active_days.sum()), 1.0))
+        _opv_post = (float(_post.orders.sum())
+                     / max(float(_post.active_days.sum()), 1.0))
+        _aov_pre = (float(_pre.total_revenue.sum())
+                    / max(float(_pre.orders.sum()), 1.0))
+        _aov_post = (float(_post.total_revenue.sum())
+                     / max(float(_post.orders.sum()), 1.0))
+
+        st.caption(
+            f"{_n:,} customers who were observed in both states -- the same "
+            f"people on both sides, so none of this is the difference "
+            f"between those who join and those who do not. Each point is one "
+            f"30-day period, counted from that customer's own first flagged "
+            f"order, so exposure is equal either side by construction and "
+            f"the window-length trap cannot apply. The join day itself is "
+            f"excluded from both sides and from the line: it is by "
+            f"definition a day they ordered, so it would hand the right-hand "
+            f"side a guaranteed order and draw a lift that is not there.")
+
+        a, b, c = st.columns(3)
+        a.metric(f"Orders per customer, {_cov}d either side",
+                 f"{_o_post:.2f} after", f"{_o_lift:+.1f}% vs {_o_pre:.2f}")
+        b.metric("Visits per customer",
+                 f"{_v_post:.2f} after", f"{_v_lift:+.1f}% vs {_v_pre:.2f}")
+        c.metric("Orders per visit", f"{_opv_post:.2f} after",
+                 f"{_opv_pre:.2f} before", delta_color="off")
+
+        # Two series on one axis because they are the SAME unit -- a count per
+        # customer per 30 days -- so they are directly comparable, and their
+        # near-coincidence is the finding rather than a coincidence to be
+        # hidden. `detail` splits each line at the join without spending a
+        # second colour channel on a distinction the rule already makes.
+        _curve = _jp[_jp.period_index != 0].copy()
+        _series = pd.concat([
+            _curve.assign(measure="orders per customer",
+                          value=_curve.orders_per_customer),
+            _curve.assign(measure="visits per customer",
+                          value=_curve.visits_per_customer),
+        ], ignore_index=True)
+        _series["phase"] = ["before enrolling" if p < 0 else "after enrolling"
+                            for p in _series.period_index]
+        _series["span"] = [f"days {int(s)} to {int(e)}" for s, e
+                           in zip(_series.period_start_day,
+                                  _series.period_end_day)]
+
+        _p_j = palette()
+        _measure_order = ["orders per customer", "visits per customer"]
+        _j_base = alt.Chart(_series).encode(
+            x=alt.X("period_index:Q",
+                    title="30-day period relative to enrollment",
+                    axis=alt.Axis(values=sorted(_curve.period_index.unique()),
+                                  format="+d"),
+                    scale=alt.Scale(nice=False)),
+            y=alt.Y("value:Q", title="per customer, per 30 days",
+                    scale=alt.Scale(nice=True)),
+            color=alt.Color("measure:N", title=None,
+                            sort=_measure_order,
+                            scale=alt.Scale(domain=_measure_order,
+                                            range=[_p_j["s1"], _p_j["s2"]])),
+            detail=alt.Detail("phase:N"))
+        _j_lines = _j_base.mark_line(strokeWidth=2)
+        _j_points = _j_base.mark_circle(size=80, stroke=_p_j["surface"],
+                                        strokeWidth=2).encode(tooltip=[
+            alt.Tooltip("measure:N", title="measure"),
+            alt.Tooltip("span:N", title="period"),
+            alt.Tooltip("value:Q", title="per customer", format=",.3f"),
+            alt.Tooltip("orders:Q", title="orders", format=",.0f"),
+            alt.Tooltip("active_days:Q", title="visits", format=",.0f")])
+        # `ink` rather than the recessive `ink2` for the same measured reason
+        # as the baseline rule on the sales-trend tab: over a mark fill ink2
+        # is under the 3:1 floor in both themes.
+        _j_rule = (alt.Chart(pd.DataFrame({"x": [0]}))
+                   .mark_rule(color=_p_j["ink"], strokeWidth=2,
+                              strokeDash=[4, 4])
+                   .encode(x=alt.X("x:Q", title=None)))
+        st.altair_chart(styled(
+            alt.layer(_j_rule, _j_lines, _j_points)
+            .properties(height=360, title=alt.Title(
+                "Order and visit rate around enrollment",
+                subtitle=f"Dashed rule: the join date, excluded from both "
+                         f"sides. {_n:,} customers, each anchored to their "
+                         f"own enrollment."))),
+            width="stretch")
+
+        # "It is all frequency" is only true once the volume accounts are
+        # netted out. Unnetted the two lifts are +7.7% and +20.3% and
+        # orders-per-visit runs 1.19 to 1.07, so asserting the strong claim
+        # in both states would make the callout wrong half the time. It is
+        # therefore derived from the measured agreement, and the two cases
+        # read differently on purpose.
+        _gap = abs(_o_lift - _v_lift)
+        _opv_move = 100.0 * (_opv_post / max(_opv_pre, 1e-9) - 1)
+        _figures = (
+            f"Over {_cov} days either side, orders per customer move "
+            f"{_o_lift:+.1f}% and visits per customer {_v_lift:+.1f}%. "
+            f"Orders per visit goes {_opv_pre:.2f} to {_opv_post:.2f} "
+            f"({_opv_move:+.1f}%), and the basket ${_aov_pre:,.2f} to "
+            f"${_aov_post:,.2f}.")
+
+        if _gap <= 3.0 and abs(_opv_move) <= 5.0:
+            st.success(
+                f"**They come back more often; they do not buy more per "
+                f"visit.** {_figures} The two lifts agree to within "
+                f"{_gap:.1f} points and neither per-visit measure moves, so "
+                f"the whole of the gain is extra visits -- the same finding "
+                f"the lifetime-value tab reports when spend per order comes "
+                f"out identical across the Top and Mid tiers. Frequency is "
+                f"what customer value is made of here.",
+                icon=":material/insights:")
+        else:
+            st.info(
+                f"**Orders and visits should move together here, and they "
+                f"do not.** {_figures} The two differ by {_gap:.1f} points, "
+                f"which on this table means a few accounts placing many "
+                f"orders on few days rather than people coming in more "
+                f"often. Net them out with the sidebar exclusion and the "
+                f"two measures converge -- that is the reading to take.",
+                icon=":material/filter_alt:")
+
+        # The run-up is the reason this section is not the causal answer, so
+        # it is stated at the same volume as the finding rather than left in
+        # a caption for a careful reader to notice.
+        _runup = 100.0 * (float(_pre.orders_per_customer.iloc[-1])
+                          / max(float(_pre.orders_per_customer.iloc[0]),
+                                1e-9) - 1)
+        st.error(
+            f"**Read the left-hand side before believing the right.** The "
+            f"rate is already climbing before anyone enrolls -- "
+            f"{_runup:+.0f}% from the earliest period to the one immediately "
+            f"before the join -- so the shape is a tent centred on the join "
+            f"date, not a step up at it. People enrol while they are already "
+            f"in an active phase, and a window centred on a self-selected "
+            f"peak shows a lift even if the program did nothing. Being "
+            f"within-person removes selection on *who* joins; it does not "
+            f"remove selection on *when*. What survives that is the "
+            f"comparison of each period against its mirror, where the "
+            f"right-hand side stays above the left throughout rather than "
+            f"crossing back.",
+            icon=":material/dangerous:")
+
+        if not bool(meta.outliers_excluded):
+            _p2 = _jp[_jp.period_index.eq(-2)]
+            if not _p2.empty and int(_p2.outlier_orders.iloc[0]) > 0:
+                _share = (100.0 * float(_p2.outlier_orders.iloc[0])
+                          / max(float(_p2.orders.iloc[0]), 1.0))
+                st.warning(
+                    f"**The spike two periods before enrollment is "
+                    f"{int(_p2.outlier_customers.iloc[0])} volume accounts, "
+                    f"not members.** They are "
+                    f"{int(_p2.outlier_orders.iloc[0]):,} of that period's "
+                    f"{int(_p2.orders.iloc[0]):,} orders -- {_share:.0f}% -- "
+                    f"placed in bulk on a handful of days, and they sit "
+                    f"almost entirely on the BEFORE side, which holds the "
+                    f"measured lift down. Turn on the sidebar exclusion to "
+                    f"net them out; unlike sections 2 and 3, this one "
+                    f"honours it.",
+                    icon=":material/filter_alt:")
+
+        _nesting = ("a subset of the 90-day one" if _cov == 180
+                    else "a superset of the 180-day one")
+        st.caption(
+            f"Period 0 is the join day and is absent from the line on "
+            f"purpose: it is one day wide against thirty for every other "
+            f"point, so plotting it on the same axis would read as a spike "
+            f"created by the arithmetic. `coverage_days` populations overlap "
+            f"-- the {_cov}-day cohort here is {_nesting} "
+            f"-- so the two are alternatives to read, never figures to add. "
+            f"Every measure except the medians is additive across periods, "
+            f"which is how the window selector above re-reads one cohort "
+            f"rather than needing a table per width.")
+
+    st.divider()
+
+    st.markdown("##### 2. Apples to apples: same window, members against non-members")
+
+    pooled = load("loyalty_pooled")
+    by_seg = load("loyalty_by_segment")
+    cohort_order = ["non-member", "member"]
+    seg2 = [s for s in SEGMENT_ORDER + ["Dormant"] if s in set(by_seg.seg_t0)]
+
+    m = pooled.set_index("cohort")
+    a, b = st.columns(2)
+    a.metric("Pooled: still active after 180 days",
+             f"{m.loc['member', 'still_active_pct']:.1f}% member",
+             f"vs {m.loc['non-member', 'still_active_pct']:.1f}% non-member")
+    worst = (by_seg.pivot(index="seg_t0", columns="cohort",
+                          values="still_active_pct")
+             .assign(delta=lambda d: d["member"] - d["non-member"]))
+    b.metric("Within-segment advantage, range",
+             f"+{worst.delta.min():.1f} to +{worst.delta.max():.1f} pp",
+             "positive in all 9 segments", delta_color="off")
+
+    st.altair_chart(styled(paired_dots(
+        by_seg[["seg_t0", "cohort", "still_active_pct"]],
+        key="seg_t0", value="still_active_pct", phase="cohort",
+        order=seg2, phase_order=cohort_order,
+        title="Still active 180 days later, by membership at the start",
+        subtitle="Split within each starting segment, which holds engagement "
+                 "level fixed.",
+        axis_title="% still active", height=360)), width="stretch")
+
+    st.success(
+        "**Members retained better in every one of the nine segments**, by "
+        f"+{worst.delta.min():.1f} to +{worst.delta.max():.1f} percentage "
+        "points. The biggest effect is on New customers: 23.4% of members were "
+        "still active against 10.9% of non-members -- enrollment roughly "
+        "doubles New retention. Set against the era-level finding that "
+        "New-segment REVENUE fell 48.7% between the two spans "
+        "($17,013 to $8,734), the implication is specific: the program works "
+        "on the new customers it reaches, and the problem is reach and "
+        "acquisition rather than program design. It is still not causal, "
+        "though -- read the caveat under it, then section 3 for why "
+        "none of it has moved the totals.",
+        icon=":material/insights:")
+
+    st.error(
+        "**The pooled number is the one to distrust.** 32.7% against 6.1% looks "
+        "like a five-fold effect, but members are concentrated in engaged "
+        "segments, so most of that gap is composition. Within-segment the "
+        "honest range is +4.2 to +12.5pp -- real, consistent, and two to six "
+        "times smaller than the pooled figure implies.",
+        icon=":material/dangerous:")
+    st.caption(
+        "Remaining bias, not removed by this design: joining is self-selected, "
+        "so members were already more inclined to return. Comparing within the "
+        "starting segment controls for engagement level at the start but not "
+        "for that propensity, so these deltas are an upper bound rather than a "
+        "causal estimate. Cells with a thin non-member count -- Loyal (50), "
+        "VIP (69), Slipping (73) -- should not carry weight on their own.")
+
+    # --- is it still true now? --------------------------------------------
+    #
+    # The cohort table above measures a 180-day outcome from a past anchor.
+    # This asks the same question of the most recent 90 days, and unlike the
+    # rest of this section it is computed from silver order grain rather than
+    # from a pre-aggregated table -- which is why it can honour the sidebar
+    # exclusion when the two tables above cannot.
+    st.markdown("###### And is it still true in the most recent 90 days?")
+
+    freq = load("member_frequency")
+
+    if freq.empty:
+        st.info("No recent-window comparison available for this data.",
+                icon=":material/hourglass_empty:")
+    else:
+        _win_start = freq.window_start.iloc[0]
+        _win_end = freq.window_end.iloc[0]
+        _recency = int(freq.recency_limit_days.iloc[0])
+
+        _m = (freq[freq.cohort.eq("member")]
+              .set_index("prior_band").sort_values("band_order"))
+        _nm = freq[freq.cohort.eq("non-member")].set_index("prior_band")
+        _nm = _nm.reindex(_m.index)
+
+        def _delta(column: str) -> list[float]:
+            """Member value against non-member value, as a percentage."""
+            return [100.0 * (a / b - 1) if b else float("nan")
+                    for a, b in zip(_m[column], _nm[column])]
+
+        _table = pd.DataFrame({
+            "prior 90d orders": _m.index,
+            "members": _m.customers.to_numpy(),
+            "non-members": _nm.customers.to_numpy(),
+            "orders/cust (mem)": _m.orders_per_customer.to_numpy(),
+            "orders/cust (non)": _nm.orders_per_customer.to_numpy(),
+            "orders/cust": _delta("orders_per_customer"),
+            "visits/cust": _delta("visits_per_customer"),
+            "orders/visit": _delta("orders_per_visit"),
+            "returned at all": _delta("pct_active"),
+            "orders once back": _delta("orders_per_active"),
+        })
+
+        st.caption(
+            f"The window is **{_win_start} to {_win_end}** -- the trailing 90 "
+            f"days from the same anchor the rest of the page uses. Membership "
+            f"is fixed as of {_win_start}, never from a flagged order inside "
+            f"the window, because that would make being active part of being "
+            f"a member. Customers with no orders in the window stay in the "
+            f"denominator; dropping them would turn every column into a "
+            f"per-active-customer figure and flatter whichever cohort comes "
+            f"back more, which is the thing being measured. Both cohorts are "
+            f"restricted to customers who ordered within {_recency} days of "
+            f"the window opening -- see the warning below for why that "
+            f"restriction is the difference between a usable number and a "
+            f"meaningless one.")
+
+        st.dataframe(
+            _table, width="stretch", hide_index=True,
+            column_config={
+                "orders/cust (mem)": st.column_config.NumberColumn(
+                    format="%.2f"),
+                "orders/cust (non)": st.column_config.NumberColumn(
+                    format="%.2f"),
+                "orders/cust": st.column_config.NumberColumn(format="%+.1f%%"),
+                "visits/cust": st.column_config.NumberColumn(format="%+.1f%%"),
+                "orders/visit": st.column_config.NumberColumn(
+                    format="%+.1f%%"),
+                "returned at all": st.column_config.NumberColumn(
+                    format="%+.1f%%"),
+                "orders once back": st.column_config.NumberColumn(
+                    format="%+.1f%%"),
+            })
+        st.caption(
+            "Each band holds prior-window order count fixed, so the "
+            "comparison is between members and non-members who were ordering "
+            "at the same rate going in. The last two columns split the "
+            "advantage: `returned at all` is the share with any order in the "
+            "window, `orders once back` is how many orders the ones who did "
+            "return placed.")
+
+        # The decomposition, from the two bands that are both well controlled
+        # and not thin. Taken from the frame rather than written in, so the
+        # sentence cannot drift from the table above it.
+        _mid = _table[_table["prior 90d orders"].isin(["1", "2-3"])]
+        _top = _table[_table["prior 90d orders"].eq("10+")].iloc[0]
+        st.success(
+            f"**Members come back more often, and that -- not bigger trips "
+            f"-- is the whole of the difference.** Holding prior ordering "
+            f"fixed, members run "
+            f"{_mid['orders/cust'].min():+.0f}% to "
+            f"{_table['orders/cust'].iloc[1:].max():+.0f}% on orders per "
+            f"customer and {_mid['visits/cust'].min():+.0f}% to "
+            f"{_table['visits/cust'].iloc[1:].max():+.0f}% on visits per "
+            f"customer across the bands where both cohorts were actually "
+            f"ordering going in, while **orders per visit moves only "
+            f"{_table['orders/visit'].iloc[1:].min():+.1f}% to "
+            f"{_table['orders/visit'].iloc[1:].max():+.1f}%** -- flat. The "
+            f"zero-order band runs higher still "
+            f"({_table['orders/cust'].iloc[0]:+.0f}%) and is deliberately "
+            f"kept out of that range: with neither cohort ordering "
+            f"beforehand it measures reactivation rather than frequency, and "
+            f"recency still differs inside it even after the restriction. "
+            f"The split in the last two columns says the same thing again: "
+            f"among "
+            f"the most engaged customers (10+ prior orders) the return rate "
+            f"is {_top['returned at all']:+.0f}% while orders once back are "
+            f"{_top['orders once back']:+.1f}%. The advantage is that they "
+            f"come back at all, not that they buy more when they do.",
+            icon=":material/insights:")
+
+        st.warning(
+            f"**This comparison can overstate the program, and here is "
+            f"exactly how.** Enrolling requires placing an order, so to be a "
+            f"member by {_win_start} a customer had to transact after the "
+            f"launch date above. Non-members carry no such requirement, so "
+            f"left unrestricted their side fills up with customers who last "
+            f"ordered years ago and could never have enrolled -- median "
+            f"recency of 477 days against 152 for members. On that "
+            f"difference alone the zero-order band reads **+1,066%**, and "
+            f"pooling every band together reads **+1,455%**. Both are "
+            f"artefacts and neither appears above: every figure on this page "
+            f"uses the {_recency}-day restriction, which cuts that band to "
+            f"**{_table['orders/cust'].iloc[0]:+.0f}%**. What the restriction "
+            f"does NOT fix is self-selection -- nothing here controls for the "
+            f"kind of customer who chooses to join -- and the engaged bands "
+            f"rest on thin non-member counts "
+            f"({int(_table['non-members'].iloc[3])} and "
+            f"{int(_table['non-members'].iloc[4])} customers). Treat these as "
+            f"an upper bound on the association, not an effect size.",
+            icon=":material/warning:")
+
+        st.info(
+            "**What this does and does not let you say.** The data cannot "
+            "attribute a dollar amount to the loyalty program -- there is no "
+            "experiment here, the comparison is confounded by who chooses to "
+            "enrol, and the program launched alongside other changes, so no "
+            "share of revenue can honestly be assigned to it. What it does "
+            "support, consistently and across every control applied: "
+            "**loyalty members come back more often, and enrollment is "
+            "associated with higher orders and visits per customer.** That "
+            "holds in the most recent 90 days, it holds within the same "
+            "people before and after they joined, and it holds at every "
+            "level of prior engagement. The direction and the mechanism are "
+            "clear even though the magnitude is not.",
+            icon=":material/lightbulb:")
+
+    st.divider()
+
+    st.markdown("##### 3. Why that has not moved the totals: two 180-day spans, one each side of launch")
     left, right = st.columns(2)
     for col, grp, label, note in (
             (left, "Core", "Reached Core 180 days later", "higher is better"),
@@ -1424,60 +1773,20 @@ with tab_program:
                 "first flagged order and never moves; `Prior` and `Recent` "
                 "roll with the data.")
 
-    st.divider()
-    st.markdown("##### 2. Apples to apples: same window, members against non-members")
-
-    pooled = load("loyalty_pooled")
-    by_seg = load("loyalty_by_segment")
-    cohort_order = ["non-member", "member"]
-    seg2 = [s for s in SEGMENT_ORDER + ["Dormant"] if s in set(by_seg.seg_t0)]
-
-    m = pooled.set_index("cohort")
-    a, b = st.columns(2)
-    a.metric("Pooled: still active after 180 days",
-             f"{m.loc['member', 'still_active_pct']:.1f}% member",
-             f"vs {m.loc['non-member', 'still_active_pct']:.1f}% non-member")
-    worst = (by_seg.pivot(index="seg_t0", columns="cohort",
-                          values="still_active_pct")
-             .assign(delta=lambda d: d["member"] - d["non-member"]))
-    b.metric("Within-segment advantage, range",
-             f"+{worst.delta.min():.1f} to +{worst.delta.max():.1f} pp",
-             "positive in all 9 segments", delta_color="off")
-
-    st.altair_chart(styled(paired_dots(
-        by_seg[["seg_t0", "cohort", "still_active_pct"]],
-        key="seg_t0", value="still_active_pct", phase="cohort",
-        order=seg2, phase_order=cohort_order,
-        title="Still active 180 days later, by membership at the start",
-        subtitle="Split within each starting segment, which holds engagement "
-                 "level fixed.",
-        axis_title="% still active", height=360)), width="stretch")
-
-    st.success(
-        "**Members retained better in every one of the nine segments**, by "
-        f"+{worst.delta.min():.1f} to +{worst.delta.max():.1f} percentage "
-        "points. The biggest effect is on New customers: 23.4% of members were "
-        "still active against 10.9% of non-members -- enrollment roughly "
-        "doubles New retention. Set against the era-level finding that New "
-        "customers fell 48.6%, the implication is specific: the program works "
-        "on the new customers it reaches, and the problem is reach and "
-        "acquisition, not program design.",
+    st.info(
+        "**The three readings together are the finding, and it is specific.** "
+        "The same people visit measurably more often after enrolling than "
+        "before, entirely through frequency rather than basket (1). Members "
+        "retain better than non-members in all nine starting segments (2). "
+        "And yet progression to Core is no better in the latest window than "
+        "in the middle one, so none of it has moved the aggregate (3). A "
+        "program that works on the customers it reaches without moving the "
+        "totals has a reach problem rather than a design problem -- and that "
+        "is a claim about enrollment coverage and acquisition, which is the "
+        "one this page supports. What the page does NOT support is a causal "
+        "estimate: section 1 cannot rule out WHEN people choose to join, and "
+        "section 2 cannot rule out WHO chooses to.",
         icon=":material/insights:")
-
-    st.error(
-        "**The pooled number is the one to distrust.** 32.7% against 6.1% looks "
-        "like a five-fold effect, but members are concentrated in engaged "
-        "segments, so most of that gap is composition. Within-segment the "
-        "honest range is +4.2 to +12.5pp -- real, consistent, and two to six "
-        "times smaller than the pooled figure implies.",
-        icon=":material/dangerous:")
-    st.caption(
-        "Remaining bias, not removed by this design: joining is self-selected, "
-        "so members were already more inclined to return. Comparing within the "
-        "starting segment controls for engagement level at the start but not "
-        "for that propensity, so these deltas are an upper bound rather than a "
-        "causal estimate. Cells with a thin non-member count -- Loyal (50), "
-        "VIP (69), Slipping (73) -- should not carry weight on their own.")
 
     with st.expander("Full transition matrix"):
         wide = (trans.pivot_table(index=["era", "seg_t0"], columns="grp_t1",
@@ -1520,31 +1829,6 @@ with tab_trend:
             f"that converts, because read in UTC the 11:00 revenue peak "
             f"lands at 16:00 and every staffing conclusion drawn from it "
             f"would be five hours out. Through {meta.anchor_date}.")
-
-        _dev_cells = int(grid.is_development.sum())
-        _dev_rev = float(grid[grid.is_development].total_revenue.sum())
-        keep_dev = st.toggle(
-            "Put the development store back in", value=False,
-            key="trend_dev",
-            help="One restaurant id carries the entire 'Alltown Fresh - "
-                 "DEVELOPMENT' app. It is test traffic whose hours are test "
-                 "hours, and it is left out of this tab by default.")
-        if not keep_dev:
-            grid = grid[~grid.is_development].copy()
-
-        if _dev_cells and not keep_dev:
-            st.info(
-                f"**The development store is excluded here, and only here.** "
-                f"{_dev_cells:,} cells, ${_dev_rev:,.2f}, 0.41% of revenue. "
-                f"It matters more than its size: because the test traffic is "
-                f"one entire store rather than rows scattered through real "
-                f"ones, it would appear below as the single location of 28 "
-                f"that trades overnight -- it peaks at 01:00 and takes most "
-                f"of its revenue before 06:00. The rows are still in "
-                f"`gold.sales_trend_grid` and in every other table in the "
-                f"warehouse, so this tab sits ${_dev_rev:,.2f} below the "
-                f"rest of the page on purpose rather than by accident.",
-                icon=":material/science:")
 
         if bool(meta.outliers_excluded):
             st.caption(
@@ -1725,18 +2009,247 @@ with tab_trend:
             _cells[_cells.day_of_week.eq(_hot.day_of_week)].per_day.sum())
         _flat_hour = _hot_day_total / 24.0
         st.success(
-            f"**The week peaks on {_hot.day_of_week} at "
+            f"The week peaks on {_hot.day_of_week} at "
             f"{int(_hot.hour_local):02d}:00, at ${_hot.per_day:,.2f} per "
-            f"open day.** Weekdays run ${_weekday:,.0f} a day against "
+            f"open day. Weekdays run ${_weekday:,.0f} a day against "
             f"${_weekend:,.0f} at weekends, so the busiest shift of the week "
-            f"is a weekday midday one. This is the answer a daily total "
-            f"cannot give: spread evenly across 24 hours that same "
-            f"{_hot.day_of_week} would be ${_flat_hour:,.2f} an hour, and "
-            f"the peak hour is "
-            f"{_hot.per_day / max(_flat_hour, 0.01):,.1f}x that. Demand is "
-            f"concentrated enough that staffing to the average misses it "
-            f"twice over -- short at the peak, idle overnight.",
+            f"is a weekday around midday. This is the answer a daily total "
+            ,
             icon=":material/schedule:")
+
+        st.divider()
+
+        # --- holidays -----------------------------------------------------
+        #
+        
+        # No new table read. Both columns were already on the frame and
+        # unused, which is the whole reason this section is cheap.
+        st.markdown("##### Holidays, and whether they trade like a normal day")
+
+        _hol_flag = grid.is_holiday.fillna(False).astype(bool)
+        # A flagged day with no name would be dropped by `groupby`, which
+        # would quietly stop the chart summing to the holiday total.
+        _hol = grid[_hol_flag].assign(
+            holiday_name=grid[_hol_flag].holiday_name.fillna("(unnamed)"))
+        _ordinary = grid[~_hol_flag]
+
+        def _rev_per_day(frame: pd.DataFrame) -> float:
+            """Revenue per distinct local date present in `frame`."""
+            return (float(frame.total_revenue.sum())
+                    / max(frame.sales_date_local.nunique(), 1))
+
+        def _stores_per_day(frame: pd.DataFrame) -> float:
+            """Mean number of stores trading on each date in `frame`."""
+            per_date = (frame.groupby("sales_date_local")
+                        .restaurant_id.nunique())
+            return float(per_date.mean()) if len(per_date) else 0.0
+
+        _hol_days = _hol.sales_date_local.nunique()
+        _ord_days = _ordinary.sales_date_local.nunique()
+
+        if not _hol_days or not _ord_days:
+            st.info(
+                f"**No holiday comparison on this data.** The grid holds "
+                f"{_hol_days:,} holiday and {_ord_days:,} ordinary days, "
+                f"and a baseline needs both. The flag comes from "
+                f"`silver.date_dim`, so a calendar that does not cover this "
+                f"span leaves it NULL and every row reads as ordinary.",
+                icon=":material/event_busy:")
+        else:
+            _hol_rate = _rev_per_day(_hol)
+            _ord_rate = _rev_per_day(_ordinary)
+            _hol_gap = 100.0 * (_hol_rate / max(_ord_rate, 0.01) - 1)
+
+            st.caption(
+                f"{_hol_days:,} holidays against {_ord_days:,} ordinary days, "
+                f"flagged from `silver.date_dim` and compared per **open "
+                f"day** rather than by total. A holiday averages "
+                f"${_hol_rate:,.2f} against ${_ord_rate:,.2f}, "
+                f"**{_hol_gap:+.1f}%** -- and that average is the least "
+                f"useful number in this section, which is what the chart is "
+                f"for.")
+
+            _by_hol = (_hol.groupby("holiday_name", as_index=False)
+                       .agg(revenue=("total_revenue", "sum"),
+                            orders=("orders", "sum"),
+                            days=("sales_date_local", "nunique")))
+            _by_hol["per_open_day"] = (_by_hol.revenue
+                                       / _by_hol.days.clip(lower=1))
+            _by_hol = _by_hol.sort_values("per_open_day", ascending=False)
+
+            _store_days = (_hol.groupby(["holiday_name", "sales_date_local"])
+                           .restaurant_id.nunique()
+                           .groupby("holiday_name").sum()
+                           .rename("store_days").reset_index())
+            _by_hol = _by_hol.merge(_store_days, on="holiday_name", how="left")
+            _by_hol["stores_per_day"] = (_by_hol.store_days
+                                         / _by_hol.days.clip(lower=1))
+            _by_hol["per_store_day"] = (_by_hol.revenue
+                                        / _by_hol.store_days.clip(lower=1))
+
+            # Built inline rather than through `ranked_bar` for two reasons:
+            # the baseline rule, and `days` in the tooltip, which is the
+            # sample size behind each bar and has to read as 4 and not 4.00.
+            _p_h = palette()
+            _hol_order = _by_hol.holiday_name.tolist()
+            _h_base = alt.Chart(_by_hol).encode(
+                y=alt.Y("holiday_name:N", sort=_hol_order, title=None),
+                x=alt.X("per_open_day:Q", title="revenue per open day",
+                        scale=alt.Scale(nice=True)))
+            _h_bars = _h_base.mark_bar(
+                color=_p_h["s1"], height=18, cornerRadiusTopRight=4,
+                cornerRadiusBottomRight=4).encode(tooltip=[
+                    alt.Tooltip("holiday_name:N", title="holiday"),
+                    alt.Tooltip("per_open_day:Q", title="per open day",
+                                format="$,.2f"),
+                    alt.Tooltip("revenue:Q", title="revenue", format="$,.2f"),
+                    alt.Tooltip("orders:Q", title="orders", format=",.0f"),
+                    alt.Tooltip("days:Q", title="open days", format=",.0f")])
+            _h_labels = _h_base.mark_text(
+                align="left", dx=6, color=_p_h["ink2"], fontSize=12).encode(
+                text=alt.Text("per_open_day:Q", format="$,.0f"))
+            # `ink` and not the recessive `ink2`, measured rather than
+            # chosen: over the bar fill ink2 is 1.80:1 in light mode and
+            # 2.03:1 in dark, both under the 3:1 floor for a graphic
+            # element, so the rule would disappear exactly where it crosses
+            # a bar -- the one place it says anything. `ink` is 4.46:1 and
+            # 3.16:1. Drawn last so it sits over the fills.
+            _h_rule = (alt.Chart(pd.DataFrame({"baseline": [_ord_rate]}))
+                       .mark_rule(color=_p_h["ink"], strokeWidth=2,
+                                  strokeDash=[4, 4])
+                       .encode(x=alt.X("baseline:Q", title=None),
+                               tooltip=[alt.Tooltip("baseline:Q",
+                                                    title="ordinary day",
+                                                    format="$,.2f")]))
+            st.altair_chart(styled(
+                alt.layer(_h_bars, _h_labels, _h_rule)
+                .properties(height=340, title=alt.Title(
+                    "Revenue per open day, by holiday",
+                    subtitle=f"Dashed rule: the ordinary-day average of "
+                             f"${_ord_rate:,.0f}. One hue -- every holiday "
+                             f"is already named on the axis."))),
+                width="stretch")
+
+            _top, _bottom = _by_hol.iloc[0], _by_hol.iloc[-1]
+            _above = _by_hol[_by_hol.per_open_day > _ord_rate]
+            _top_gap = 100 * (_top.per_open_day
+                              / max(_ord_rate, 0.01) - 1)
+            _bottom_gap = 100 * (_bottom.per_open_day
+                                 / max(_ord_rate, 0.01) - 1)
+            st.warning(
+                f"**Holidays are the wrong grain to plan from: these "
+                f"{len(_by_hol)} holidays span "
+                f" ${_bottom.per_open_day:,.0f} to ${_top.per_open_day:,.0f} "
+                f"of revenue per open day, a "
+                f"{_top.per_open_day / max(_bottom.per_open_day, 0.01):.1f}x "
+                f"spread, and {len(_above)} of them trade *above* an "
+                f"ordinary day.** `{_top.holiday_name}` runs "
+                f"{_top_gap:+.0f}% against the baseline and "
+                f"`{_bottom.holiday_name}` {_bottom_gap:+.0f}%. "
+                f"The holidays at the top are the "
+                f"ones most people still work, and the bottom two are the "
+                f"two almost nobody does",
+                icon=":material/event:")
+
+            _ord_store_days = int(_ordinary.groupby("sales_date_local")
+                                  .restaurant_id.nunique().sum())
+            _ord_store_rate = (float(_ordinary.total_revenue.sum())
+                               / max(_ord_store_days, 1))
+            _hol_table = _by_hol[["holiday_name", "days", "stores_per_day",
+                                  "per_open_day", "per_store_day"]].copy()
+            _hol_table["per_store_day_vs_ordinary"] = 100.0 * (
+                _hol_table.per_store_day / max(_ord_store_rate, 0.01) - 1)
+            st.dataframe(
+                _hol_table.rename(columns={"holiday_name": "holiday",
+                                           "days": "open_days"}),
+                width="stretch", hide_index=True,
+                column_config={
+                    "stores_per_day": st.column_config.NumberColumn(
+                        format="%.2f"),
+                    "per_open_day": st.column_config.NumberColumn(
+                        format="$%.2f"),
+                    "per_store_day": st.column_config.NumberColumn(
+                        format="$%.2f"),
+                    "per_store_day_vs_ordinary":
+                        st.column_config.NumberColumn(format="%+.1f%%"),
+                })
+
+            # Whichever holiday's reading moves most once the number of
+            # stores trading is held constant. Computed rather than named,
+            # because which one it is depends on the data.
+            _rank_open = _by_hol.per_open_day.rank(ascending=False)
+            _rank_store = _by_hol.per_store_day.rank(ascending=False)
+            _shift = (_rank_store - _rank_open).abs()
+            _mover_note = ""
+            if float(_shift.max()) >= 2:
+                _m_at = _shift.idxmax()
+                _mover_note = (
+                    f" Per holiday it does matter: "
+                    f"`{_by_hol.holiday_name.loc[_m_at]}` is "
+                    f"{int(_rank_open.loc[_m_at])}th of {len(_by_hol)} per "
+                    f"open day but {int(_rank_store.loc[_m_at])}th per store "
+                    f"day, because "
+                    f"{_by_hol.stores_per_day.loc[_m_at]:.2f} stores traded "
+                    f"rather than {_stores_per_day(_ordinary):.2f} -- each "
+                    f"one that did open took close to a normal day's money.")
+            st.caption(
+                f"`per_store_day` is the column to staff one store from and "
+                f"`per_open_day` the one to plan chain-wide volume from, and "
+                f"they do not agree. Chain-wide, closures do not explain the "
+                f"shortfall: {_stores_per_day(_hol):.2f} stores traded on an "
+                f"average holiday against {_stores_per_day(_ordinary):.2f} "
+                f"on an ordinary one, so the {_hol_gap:+.1f}% is thinner "
+                f"demand and not shut doors.{_mover_note} `open_days` is the "
+                f"sample size behind every row and it is small -- three or "
+                f"four observations spread over four years -- so read the "
+                f"extremes and not the ranking in the middle.")
+
+            _ll = {}
+            for _is_we, _label in ((False, "weekday"), (True, "weekend")):
+                _h_sub = _hol[_hol.is_weekend.fillna(False).astype(bool)
+                              == _is_we]
+                _o_sub = _ordinary[_ordinary.is_weekend.fillna(False)
+                                   .astype(bool) == _is_we]
+                _ll[_label] = (_rev_per_day(_h_sub), _rev_per_day(_o_sub),
+                               _h_sub.sales_date_local.nunique())
+            _hol_wd_share = 100.0 * _ll["weekday"][2] / max(_hol_days, 1)
+            _ord_wd_days = _ordinary[~_ordinary.is_weekend.fillna(False)
+                                     .astype(bool)].sales_date_local.nunique()
+            _wd_gap = 100 * (_ll["weekday"][0]
+                             / max(_ll["weekday"][1], 0.01) - 1)
+            _we_gap = 100 * (_ll["weekend"][0]
+                             / max(_ll["weekend"][1], 0.01) - 1)
+            st.markdown(
+                f"**The comparison is confounded, and correcting it widens "
+                f"the gap rather than closing it.** "
+                f"{_hol_wd_share:.0f}% of these holidays fall on a weekday "
+                f"against {100.0 * _ord_wd_days / max(_ord_days, 1):.0f}% of "
+                f"ordinary days, and weekdays are the busier kind of day "
+                f"(${_ll['weekday'][1]:,.0f} against "
+                f"${_ll['weekend'][1]:,.0f} per day), so the pooled "
+                f"{_hol_gap:+.1f}% above actually flatters holidays. Like "
+                f"for like a holiday weekday takes "
+                f"${_ll['weekday'][0]:,.0f} against "
+                f"${_ll['weekday'][1]:,.0f} (**{_wd_gap:+.1f}%**) and a "
+                f"holiday weekend ${_ll['weekend'][0]:,.0f} against "
+                f"${_ll['weekend'][1]:,.0f} (**{_we_gap:+.1f}%**).")
+
+            _h_hour = _hol.groupby("hour_local").total_revenue.sum()
+            _o_hour = _ordinary.groupby("hour_local").total_revenue.sum()
+            _h_top2 = 100.0 * float(_h_hour.nlargest(2).sum()) / max(
+                float(_h_hour.sum()), 0.01)
+            _o_top2 = 100.0 * float(_o_hour.nlargest(2).sum()) / max(
+                float(_o_hour.sum()), 0.01)
+            st.markdown(
+                f"**The holiday day is also flatter and an hour later, "
+                f"which is a rota change and not only a volume one.** The "
+                f"peak moves from {int(_o_hour.idxmax()):02d}:00 to "
+                f"{int(_h_hour.idxmax()):02d}:00, and the two busiest hours "
+                f"carry {_h_top2:.1f}% of a holiday's revenue against "
+                f"{_o_top2:.1f}% of an ordinary day's -- the midday rush "
+                f"spreads out rather than disappearing. Staffing a holiday "
+                f"to the ordinary-day curve therefore puts the shift in "
+                f"slightly the wrong place as well as overstaffing it.")
 
         st.divider()
 
@@ -1776,8 +2289,7 @@ with tab_trend:
             _noon = _cat_grid["Midday"].idxmax()
             if _am != _noon:
                 st.info(
-                    f"**The menu rotates through the day, so one prep plan "
-                    f"will not fit it.** `{_am}` is "
+                    f"`{_am}` is "
                     f"{_cat_grid.loc[_am, 'Morning']:.0f}% of Morning revenue "
                     f"and `{_noon}` is {_cat_grid.loc[_noon, 'Midday']:.0f}% "
                     f"of Midday. Read down a column, not across a row: the "

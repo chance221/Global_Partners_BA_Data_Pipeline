@@ -93,6 +93,26 @@
         ]
       },
       {
+        "Sid": "SyncTheDailyWorkflow",
+        "_comment": "For the workflow sync step. Unlike the jobs above, CREATE is granted as well as update: a workflow and its triggers carry no uncertain parameters -- no Iceberg conf, no worker sizing, no artifact prefix -- so there is no manual-first argument for them, and a fresh account should come up from a push alone. Deliberately NO glue:StartTrigger, StopTrigger, DeleteTrigger or DeleteWorkflow. That split is the point: a push can change WHAT the daily schedule does, but only a human can change WHETHER it runs, and CI cannot dismantle the orchestration at all. Arm it with `aws glue start-trigger --name gp_daily_start` under your own credentials. Trigger and workflow names must match infra/glue/workflows/gp_daily.json exactly; adding a trigger there means adding its ARN here, or the deploy fails with AccessDenied naming the trigger.",
+        "Effect": "Allow",
+        "Action": [
+          "glue:GetWorkflow",
+          "glue:CreateWorkflow",
+          "glue:UpdateWorkflow",
+          "glue:GetTrigger",
+          "glue:CreateTrigger",
+          "glue:UpdateTrigger"
+        ],
+        "Resource": [
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:catalog",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:workflow/gp_daily",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:trigger/gp_daily_start",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:trigger/gp_daily_to_silver",
+          "arn:aws:glue:us-east-1:__ACCOUNT_ID__:trigger/gp_daily_to_gold"
+        ]
+      },
+      {
         "Sid": "PassExecutionRoleToGlue",
         "_comment": "UpdateJob carries a Role field, so re-asserting it counts as passing that role and needs iam:PassRole. Without this the deploy fails with a PassRole error that never mentions Glue. The PassedToService condition limits it to Glue, so the role cannot be handed to anything else. Note for simulate-principal-policy: the resource here is the ROLE being passed, not the job, and the context key has to be supplied explicitly or the condition evaluates false and reports implicitDeny.",
         "Effect": "Allow",

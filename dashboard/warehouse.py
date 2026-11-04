@@ -105,6 +105,43 @@ SALES_MEASURES = (
     ("total_revenue", "outlier_revenue"),
 )
 
+# The same pairing for `loyalty_join_profile`, which carries two more. Note
+# `customers` is in here: netting the volume accounts out of a per-customer
+# rate means removing them from the DENOMINATOR as well, and leaving them in
+# it would understate every netted rate on the page.
+JOIN_MEASURES = (
+    ("customers", "outlier_customers"),
+    ("orders", "outlier_orders"),
+    ("line_items", "outlier_line_items"),
+    ("units", "outlier_units"),
+    ("active_days", "outlier_active_days"),
+    ("total_revenue", "outlier_revenue"),
+)
+
+# The trailing window `member_frequency` compares in, and the recency rule
+# that makes the comparison fair. 90 matches customer_rfm's
+# ACTIVE_WINDOW_DAYS so the figures sit beside the published 90-day columns
+# rather than inventing a second convention.
+MEMBER_WINDOW_DAYS = 90
+# A customer only enters the comparison if they ordered within this many days
+# of the window opening. Without it the non-member side is mostly people who
+# last ordered in 2020 and could never have enrolled -- see the docstring.
+MEMBER_RECENCY_DAYS = 365
+# Prior-window order counts, as (label, lower, upper) with both inclusive.
+# Holding this fixed is what separates "members order more" from "engaged
+# customers order more, and they are the ones who enrol".
+MEMBER_PRIOR_BANDS = (
+    ("0", 0, 0),
+    ("1", 1, 1),
+    ("2-3", 2, 3),
+    ("4-9", 4, 9),
+    ("10+", 10, 10 ** 9),
+)
+
+# The half-widths `loyalty_join_profile` publishes, widest first so the
+# default selection shows the whole decay rather than the first third of it.
+JOIN_COVERAGE = (180, 90)
+
 
 def catalog(env: str = "prod"):
     """The Glue catalog, configured from the same YAML the jobs read."""
@@ -519,6 +556,172 @@ def sales_trend(cat, cfg, exclude_outliers: bool = False) -> pd.DataFrame:
     return df
 
 
+def join_profile(cat, cfg, exclude_outliers: bool = False) -> pd.DataFrame:
+    """The order rate in 30-day periods around each customer's own join date.
+
+    Returned whole, both `coverage_days` populations together, because the tab
+    lets the reader pick one and they are 20 rows in total.
+
+    THE PUBLISHED RATES ARE THE UNNETTED ONES, SO THEY ARE RECOMPUTED HERE
+    ---------------------------------------------------------------------
+    `orders_per_customer` and friends are computed in the transform from the
+    whole cohort. Subtracting the `outlier_*` portion changes the numerator
+    AND the denominator, so the published rate is no longer the rate of what
+    is left. Every rate this function returns is therefore derived after the
+    subtraction, and the published ones are dropped rather than left on the
+    frame to be picked up by accident.
+
+    `median_order_value` is NOT netted and cannot be: a published median
+    cannot be un-aggregated. It is dropped when excluding rather than shown
+    as if it had been corrected.
+
+    WHY THIS TABLE HONOURS THE TOGGLE WHEN THE OTHER TWO ERA TABLES DO NOT
+    ---------------------------------------------------------------------
+    It publishes the flagged accounts' portion of every additive measure, the
+    way `sales_trend_grid` does, so the exclusion is a subtraction rather than
+    a filter. It matters more here than anywhere else on the page: two
+    accounts are 826 of 2,778 orders in period -2 alone, which unnetted is
+    the single most prominent feature of the curve.
+    """
+    df = scan(cat, cfg, "gold", "loyalty_join_profile")
+    counts = [c for pair in JOIN_MEASURES for c in pair]
+    for column in counts:
+        df[column] = pd.to_numeric(df[column])
+
+    if exclude_outliers:
+        for measure, portion in JOIN_MEASURES:
+            df[measure] = df[measure] - df[portion]
+        df = df.drop(columns=["median_order_value"])
+    else:
+        df = _floats(df, "median_order_value")
+
+    base = df.customers.clip(lower=1)
+    df["orders_per_customer"] = df.orders / base
+    df["visits_per_customer"] = df.active_days / base
+    # Null rather than a division by zero: a period with no visits has no
+    # orders-per-visit, which is not the same as one order per visit.
+    df["orders_per_visit"] = (df.orders / df.active_days).where(
+        df.active_days > 0)
+    df["avg_order_value"] = (df.total_revenue / df.orders).where(df.orders > 0)
+    df["revenue_per_customer"] = df.total_revenue / base
+    return df.drop(columns=["orders_per_customer_per_day",
+                            "active_days_per_customer",
+                            "orders_per_active_day"])
+
+
+def member_frequency(orders: pd.DataFrame, anchor: date) -> pd.DataFrame:
+    """Members against non-members in the most recent 90 days, like for like.
+
+    One row per (prior-order band, cohort). The question is whether members
+    are still ordering and visiting more often NOW, rather than over the
+    180-day span the anchored cohort tables measure.
+
+    FOUR THINGS DECIDE THIS NUMBER, AND THREE OF THEM INFLATE IT IF IGNORED
+    ----------------------------------------------------------------------
+    1. Membership is fixed AS OF THE WINDOW START -- a customer counts as a
+       member if their first flagged order is on or before it. Defining it
+       from a flagged order inside the window would be circular: being
+       active in the window would be part of being a member.
+    2. The base is customers who already EXISTED before the window. Someone
+       whose first ever order falls inside it could not have been a member
+       beforehand, so including them would mix acquisition into a frequency
+       comparison.
+    3. Customers with ZERO orders in the window stay in the denominator.
+       Dropping them silently turns every measure into "per ACTIVE customer",
+       which flatters whichever cohort is more likely to be active -- and
+       that is most of what is being measured.
+    4. THE RECENCY RULE IS THE ONE THAT MATTERS MOST. Enrolling requires an
+       order, so to be a member by the window start a customer had to
+       transact between the program launch and then. Non-members carry no
+       such requirement, so unrestricted they include the whole dormant pile:
+       median recency runs 152 days for members against 477 for non-members,
+       and the raw gap in the zero-order band comes out at +1066% on that
+       difference alone. Restricting both cohorts to customers who ordered
+       within `MEMBER_RECENCY_DAYS` of the window start cuts that band to
+       +310% and is the only version of this comparison worth publishing.
+
+    Even so this is NOT causal. Holding prior orders and recency fixed does
+    nothing about self-selection on who chooses to enrol, so read it as an
+    upper bound on the association rather than an effect.
+    """
+    window_start = anchor - timedelta(days=MEMBER_WINDOW_DAYS)
+    prior_start = window_start - timedelta(days=MEMBER_WINDOW_DAYS)
+
+    per_customer = orders.groupby("user_id").agg(
+        first_order=("order_date", "min"),
+        last_order=("order_date", "max"))
+    joined = (orders[orders.loyalty_order]
+              .groupby("user_id").order_date.min().rename("join_date"))
+    per_customer = per_customer.join(joined)
+
+    in_window = orders[(orders.order_date > window_start)
+                       & (orders.order_date <= anchor)]
+    in_prior = orders[(orders.order_date > prior_start)
+                      & (orders.order_date <= window_start)]
+
+    panel = (per_customer
+             .join(in_window.groupby("user_id").agg(
+                 orders=("order_id", "count"),
+                 visits=("order_date", "nunique")))
+             .join(in_prior.groupby("user_id")
+                   .agg(prior_orders=("order_id", "count"))))
+    panel[["orders", "visits", "prior_orders"]] = panel[
+        ["orders", "visits", "prior_orders"]].fillna(0)
+
+    # Existed beforehand, and was still alive when the window opened.
+    recency = [(window_start - d).days for d in panel.last_order]
+    panel = panel[(panel.first_order <= window_start)
+                  & (pd.Series(recency, index=panel.index)
+                     <= MEMBER_RECENCY_DAYS)]
+
+    # Fixed at the window start. A customer who enrolled INSIDE the window is
+    # neither cohort -- they are active by construction, which would answer
+    # the question with its own premise.
+    def cohort_of(join_date) -> str:
+        if pd.isna(join_date):
+            return "non-member"
+        return "member" if join_date <= window_start else "joined in window"
+
+    panel["cohort"] = [cohort_of(j) for j in panel.join_date]
+    panel = panel[panel.cohort != "joined in window"]
+    panel["active"] = panel.orders > 0
+
+    rows = []
+    for position, (label, low, high) in enumerate(MEMBER_PRIOR_BANDS):
+        band = panel[panel.prior_orders.between(low, high)]
+        for cohort in ("member", "non-member"):
+            sub = band[band.cohort == cohort]
+            customers = int(len(sub))
+            n_orders = float(sub.orders.sum())
+            n_visits = float(sub.visits.sum())
+            n_active = int(sub.active.sum())
+            rows.append({
+                "prior_band": label,
+                "band_order": position,
+                "cohort": cohort,
+                "customers": customers,
+                "orders": n_orders,
+                "visits": n_visits,
+                "active": n_active,
+                "pct_active": (100.0 * n_active / customers
+                               if customers else float("nan")),
+                "orders_per_customer": (n_orders / customers
+                                        if customers else float("nan")),
+                "visits_per_customer": (n_visits / customers
+                                        if customers else float("nan")),
+                "orders_per_visit": (n_orders / n_visits
+                                     if n_visits else float("nan")),
+                # Among the active only, so "more of them come back" reads
+                # apart from "they order more once they are back".
+                "orders_per_active": (n_orders / n_active
+                                      if n_active else float("nan")),
+                "window_start": str(window_start),
+                "window_end": str(anchor),
+                "recency_limit_days": MEMBER_RECENCY_DAYS,
+            })
+    return pd.DataFrame(rows)
+
+
 def datasets(env: str = "prod",
              exclude_outliers: bool = False) -> dict[str, pd.DataFrame]:
     """Every frame the dashboard draws, from one read of the warehouse.
@@ -590,6 +793,7 @@ def datasets(env: str = "prod",
     frames.update(cadence_frames(cust))
     frames["reorder_cliff"] = reorder_cliff(orders, anchor)
     frames["segment_sizes"] = segment_sizes(cust)
+    frames["member_frequency"] = member_frequency(orders, anchor)
 
     active = cust[cust.is_active]
     frames["meta"] = pd.DataFrame([{
@@ -657,9 +861,27 @@ def datasets(env: str = "prod",
             "holiday_name", "week_start", "month_start", "sales_date_utc",
             "orders", "line_items", "units", "total_revenue",
             "outlier_orders", "outlier_line_items", "outlier_units",
-            "outlier_revenue", "is_development", "week_complete",
+            "outlier_revenue", "week_complete",
             "month_complete"])
         frames["meta"]["sales_trend_table"] = f"missing: {exc}"
+
+    # Its own try, like the one above: this is the newest table in the
+    # warehouse, so a clone that predates it must still draw the other four
+    # tabs and the two sections of this one that do not use it.
+    try:
+        frames["join_profile"] = join_profile(cat, cfg, exclude_outliers)
+        frames["meta"]["join_profile_table"] = "present"
+    except NoSuchTableError as exc:
+        frames["join_profile"] = pd.DataFrame(columns=[
+            "coverage_days", "period_index", "period_start_day",
+            "period_end_day", "window_days", "customers", "orders",
+            "line_items", "units", "total_revenue", "active_days",
+            "outlier_customers", "outlier_orders", "outlier_line_items",
+            "outlier_units", "outlier_revenue", "outlier_active_days",
+            "median_order_value", "orders_per_customer",
+            "visits_per_customer", "orders_per_visit", "avg_order_value",
+            "revenue_per_customer"])
+        frames["meta"]["join_profile_table"] = f"missing: {exc}"
 
     # A separate try, not folded into the one above: a missing CLV table must
     # not report the anchored tables as missing too, and vice versa. They are

@@ -25,13 +25,14 @@ pytestmark = pytest.mark.spark
 
 
 def _line(order_id, utc_ts, *, category="Side", price="9.99", lineitem="1",
-          restaurant="r1", qty=1, user="u1", app="app"):
+          restaurant="r1", qty=1, user="u1"):
+    # No app_name override: the transform stopped reading it when the
+    # development app moved to `silver_filters`, so conftest's default stands.
     return {"ORDER_ID": f"'{order_id}'", "LINEITEM_ID": f"'{lineitem}'",
             "RESTAURANT_ID": f"'{restaurant}'",
             "CREATION_TIME_UTC": f"'{utc_ts}'",
             "ITEM_CATEGORY": f"'{category}'", "ITEM_PRICE": f"'{price}'",
             "ITEM_QUANTITY": str(qty), "IS_LOYALTY": "false",
-            "APP_NAME": f"'{app}'",
             # A typed NULL, not a bare one: conftest builds a SQL VALUES
             # list, so `None` is not a literal and an untyped NULL is Spark's
             # `void` type.
@@ -312,34 +313,20 @@ def test_an_anonymous_line_is_never_part_of_the_outlier_portion(item_rows,
 
 # --- the development-traffic flag -----------------------------------------
 
-def test_development_traffic_is_flagged_not_dropped(item_rows, build):
-    """Flagged so the page can drop it; kept so the totals still tie.
+def test_app_name_is_not_a_column_of_this_table(item_rows, build):
+    """The development app is excluded in silver now, not flagged here.
 
-    The dev app is one whole store that peaks at 1am, so on a per-location
-    staffing chart it reads as a genuine 24-hour site. Filtering it here
-    instead would make this the only gold table that disagrees with the rest
-    of the warehouse about total revenue.
+    Replaces two tests that asserted an `is_development` flag. The exclusion
+    moved to `silver_filters`, so by the time this transform runs there is no
+    test traffic left to mark -- and a table that still published the flag
+    would publish a column that is constant False, which reads like a
+    guarantee it no longer makes.
     """
     out = build(item_rows(
-        _line("o1", "2020-04-21T16:00:00", restaurant="r_real",
-              app="Alltown Fresh"),
-        _line("o2", "2020-04-21T16:00:00", restaurant="r_dev",
-              app="Alltown Fresh - DEVELOPMENT"),
+        _line("o1", "2020-04-21T16:00:00", restaurant="r_a"),
+        _line("o2", "2020-04-21T16:00:00", restaurant="r_b"),
     ), "2020-04-21").collect()
 
-    flags = {r.restaurant_id: r.is_development for r in out}
-    assert flags == {"r_real": False, "r_dev": True}
-    # Kept, not dropped: both stores' revenue is still here.
+    assert "is_development" not in out[0].asDict()
+    assert "app_name" not in out[0].asDict()
     assert float(sum(r.total_revenue for r in out)) == pytest.approx(19.98)
-
-
-def test_a_cell_mixing_real_and_test_traffic_is_flagged(item_rows, build):
-    """ANY dev line flags the cell -- a mixed cell is still not plannable."""
-    out = build(item_rows(
-        _line("o1", "2020-04-21T16:00:00", app="Alltown Fresh", lineitem="1"),
-        _line("o2", "2020-04-21T16:00:00",
-              app="Alltown Fresh - DEVELOPMENT", lineitem="2"),
-    ), "2020-04-21").collect()
-
-    assert len(out) == 1
-    assert out[0].is_development is True

@@ -1,0 +1,100 @@
+{
+  "_comment": [
+    "The daily orchestration: RDS -> raw -> silver -> gold, in Glue alone.",
+    "No EventBridge rule and no Step Function -- a SCHEDULED trigger starts the",
+    "chain and two CONDITIONAL triggers carry it forward.",
+    "",
+    "WHY A SUBDIRECTORY. infra/glue/*.json is one file per Glue JOB, and both",
+    "the validate step and the deploy step derive the job name from the",
+    "filename. A workflow file sitting beside them would be deployed as",
+    "`aws glue update-job --job-name gp_daily` and fail. Keeping workflows one",
+    "level down keeps that glob meaning exactly one thing.",
+    "",
+    "WHY THE SCHEDULE IS NOT ARMED. StartOnCreation is false on the clock",
+    "trigger and true on the two that follow it. The conditional triggers do",
+    "nothing until something upstream succeeds, so arming them is free; the",
+    "clock trigger bills three Glue jobs a day forever, so switching it on is a",
+    "deliberate act and not a side effect of a push:",
+    "    aws glue start-trigger --name gp_daily_start",
+    "    aws glue stop-trigger  --name gp_daily_start",
+    "StartOnCreation only applies at creation. Flipping it to true in this file",
+    "will NOT arm a trigger that already exists -- use start-trigger.",
+    "",
+    "WHY 07:00 UTC. The extract window is [period, period + 1 day) on",
+    "inserted_at, and the period defaults to yesterday UTC, so the day being",
+    "processed has to have closed. Seven hours of margin means a row stamped",
+    "at 23:59 and committed slightly late is still inside the window. Glue cron",
+    "is always UTC, takes six fields, and requires `?` in either day-of-month",
+    "or day-of-week.",
+    "",
+    "WHY SUCCEEDED AND NOT ANY TERMINAL STATE. A failed ingest must stop the",
+    "chain: running raw_to_silver on a partial day would merge an incomplete",
+    "batch into silver, and gold would then aggregate it. Glue by itself does",
+    "not notify -- the workflow run in the console is the record. Anything that",
+    "emails you needs an EventBridge rule, which is outside `Glue alone`."
+  ],
+  "Workflow": {
+    "Name": "gp_daily",
+    "Description": "Daily: RDS -> raw -> silver -> gold. Scheduled trigger plus two conditional triggers.",
+    "MaxConcurrentRuns": 1
+  },
+  "Triggers": [
+    {
+      "Name": "gp_daily_start",
+      "WorkflowName": "gp_daily",
+      "Type": "SCHEDULED",
+      "Schedule": "cron(0 7 * * ? *)",
+      "Description": "07:00 UTC daily. Starts the chain at the raw ingest.",
+      "StartOnCreation": false,
+      "Actions": [
+        {
+          "JobName": "gp_raw_ingest"
+        }
+      ]
+    },
+    {
+      "Name": "gp_daily_to_silver",
+      "WorkflowName": "gp_daily",
+      "Type": "CONDITIONAL",
+      "Description": "raw -> silver, only once the ingest has succeeded.",
+      "StartOnCreation": true,
+      "Predicate": {
+        "Logical": "ANY",
+        "Conditions": [
+          {
+            "LogicalOperator": "EQUALS",
+            "JobName": "gp_raw_ingest",
+            "State": "SUCCEEDED"
+          }
+        ]
+      },
+      "Actions": [
+        {
+          "JobName": "gp_raw_to_silver"
+        }
+      ]
+    },
+    {
+      "Name": "gp_daily_to_gold",
+      "WorkflowName": "gp_daily",
+      "Type": "CONDITIONAL",
+      "Description": "silver -> gold, only once raw_to_silver has succeeded.",
+      "StartOnCreation": true,
+      "Predicate": {
+        "Logical": "ANY",
+        "Conditions": [
+          {
+            "LogicalOperator": "EQUALS",
+            "JobName": "gp_raw_to_silver",
+            "State": "SUCCEEDED"
+          }
+        ]
+      },
+      "Actions": [
+        {
+          "JobName": "gp_silver_to_gold"
+        }
+      ]
+    }
+  ]
+}

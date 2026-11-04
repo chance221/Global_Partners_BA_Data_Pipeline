@@ -16,13 +16,7 @@ EVERY MEASURE IN THIS TABLE IS ADDITIVE
 set of rows -- across hours, categories, stores, days, any combination.
 
 
-Here each order is pinned to ONE cell -- the cell of its single largest line item 
--- and `orders` counts those
-pins. So `orders` on a category row reads "orders whose biggest item was in
-this category", and summing every category returns the true distinct order
-count. `line_items` answers the other question: how many things were sold.
-
-TIME OF DAY IS LOCAL TIME, AND THAT IS THE WHOLE POINT
+TIME OF DAY IS LOCAL TIME
 ------------------------------------------------------
 The pipeline stores and dates everything in UTC deliberately, and every other
 gold table is UTC. This one is not, because an hour-of-day column in UTC is
@@ -47,13 +41,6 @@ reconciles the two by hand:
     would be worse than any one of them being wrong. It costs $35.57 across 10
     line items: "Test Items", and the "Most Popular" pseudo-category that is a
     merchandising shelf rather than a section of the menu.
-
-Nothing else is filtered. In particular the `Alltown Fresh - DEVELOPMENT` app
-is INCLUDED -- $7,221.54, 0.41% of revenue, 826 line items -- because every
-other gold table includes it, and one table quietly disagreeing with the rest
-of the warehouse is the worse problem. It is worth filtering, in silver and
-everywhere at once, which is a separate decision from this table.
-
 
 THE OUTLIER TOGGLE IS FOUR COLUMNS, NOT TWICE THE ROWS
 ------------------------------------------------------
@@ -86,12 +73,6 @@ from python_scripts.silver_to_gold.transforms.category_period_sales import (
 # `from_utc_timestamp` applies EST or EDT per instant instead of being an hour
 # out for half of every year.
 LOCAL_ZONE = "America/New_York"
-
-# Matched on the app name rather than the restaurant id, even though today it
-# resolves to exactly one store. The id is an accident of this extract; the
-# app name is what actually says "this is the test environment", and a second
-# dev store appearing later should be caught rather than missed.
-DEVELOPMENT_APP_PATTERN = "%DEVELOPMENT%"
 
 # Hour buckets as (label, first_hour, last_hour), both inclusive, covering all
 # 24 hours with no gap. Named for the clock rather than for meals: the
@@ -149,10 +130,7 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
     )
 
     # The volume-outlier flag, recomputed from silver through the shared rule.
-    # `lifetime` is given the UNFILTERED items on purpose: whether an account
-    # is a volume account is a property of everything it ever ordered, so
-    # dropping the pseudo-categories first could in principle move a customer
-    # across the floor and make this table disagree with the CLV tables.
+   
     flagged = (clv_history.lifetime(items)
                .filter(F.col("is_volume_outlier"))
                .select("user_id")
@@ -215,15 +193,7 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
              .cast("bigint").alias("outlier_units"),
             F.coalesce(F.sum(F.when(F.col("_outlier"),
                                     F.col("_line_value"))), F.lit(0))
-             .cast("decimal(18,2)").alias("outlier_revenue"),
-            # ANY line, not every line: a cell mixing real and test traffic
-            # is still not a cell to plan a shift from. Today the dev app is
-            # one whole store so the distinction is moot, which is exactly
-            # why the stricter reading is the one to publish.
-            F.max(F.coalesce(
-                F.upper(F.col("app_name")).like(DEVELOPMENT_APP_PATTERN),
-                F.lit(False))).alias("is_development"),
-        )
+             .cast("decimal(18,2)").alias("outlier_revenue"),        )
     )
 
     return (

@@ -5,8 +5,10 @@
 # policy only accepts the token when the job declares that environment. 
 #
 
-# The update-job half is deliberately absent. It needs the real JobUpdate shape
-# from the first manually created job; see infra/README.md.
+# Jobs are created by hand once and from then on UPDATED by CI -- see
+# infra/README.md for why. The gp_daily workflow and its triggers are different:
+# they carry no uncertain parameters, so CI creates them as well as updates
+# them, and a fresh account is bootstrapped by the first push.
 name: deploy
 
 on:
@@ -58,10 +60,17 @@ jobs:
 
       # Cheap, and it fails in seconds rather than halfway through a deploy:
       # catches a leaked account id or a field update-job would reject.
-      - name: Validate the Glue job definitions
+      - name: Validate the Glue job and workflow definitions
         run: |
+          set -euo pipefail
+          # infra/glue/*.json is one file per JOB; the orchestration lives a
+          # level down, because both this loop and the deploy step take the
+          # job name from the filename.
           for f in infra/glue/*.json; do
             python infra/glue/prepare_job_update.py check "$f"
+          done
+          for f in infra/glue/workflows/*.json; do
+            python infra/glue/prepare_workflow.py check "$f" --job-dir infra/glue
           done
 
       - name: pytest
@@ -145,6 +154,61 @@ jobs:
             aws glue update-job --job-name "$job"               --job-update file:///tmp/job-update.json >/dev/null
             echo "  $job -> $PREFIX"
           done
+
+      # After the jobs, because a trigger's actions name them -- and a trigger
+      # created against a job that is mid-repoint would fire at the old build.
+      #
+      # Create-or-update rather than update: a workflow has no parameters to
+      # get wrong, so there is no manual-first argument for it, and a fresh
+      # account should come up from a push alone.
+      #
+      # The two calls take DIFFERENT shapes. TriggerUpdate cannot carry Type
+      # or WorkflowName, because Glue will not let a trigger change either, so
+      # prepare_workflow.py emits one document for create and another for
+      # update rather than one document for both.
+      #
+      # Nothing here arms the clock. CI has no glue:StartTrigger, so a push can
+      # change WHAT the schedule does but never WHETHER it runs:
+      #   aws glue start-trigger --name gp_daily_start
+      - name: Sync the Glue workflow and its triggers
+        run: |
+          set -euo pipefail
+
+          for wf in infra/glue/workflows/*.json; do
+            python infra/glue/prepare_workflow.py emit "$wf"               --kind workflow > /tmp/workflow.json
+            name="$(python -c "import json;print(json.load(open('/tmp/workflow.json'))['Name'])")"
+
+            if aws glue get-workflow --name "$name" >/dev/null 2>&1; then
+              aws glue update-workflow --cli-input-json file:///tmp/workflow.json >/dev/null
+              echo "  workflow $name updated"
+            else
+              aws glue create-workflow --cli-input-json file:///tmp/workflow.json >/dev/null
+              echo "  workflow $name created"
+            fi
+
+            # Trigger names cannot contain spaces, so word splitting is safe
+            # and a for loop keeps set -e meaningful -- a `while read` down a
+            # pipe runs in a subshell and swallows the failure.
+            for trigger in $(python infra/glue/prepare_workflow.py names "$wf"); do
+              if aws glue get-trigger --name "$trigger" >/dev/null 2>&1; then
+                op=update
+              else
+                op=create
+              fi
+              python infra/glue/prepare_workflow.py emit "$wf"                 --kind trigger --name "$trigger" --op "$op" > /tmp/trigger.json
+              aws glue "${op}-trigger" --cli-input-json file:///tmp/trigger.json >/dev/null
+              echo "  trigger  $trigger ${op}d"
+            done
+          done
+
+          {
+            echo "### Glue orchestration"
+            echo "Workflow and triggers synced from infra/glue/workflows/."
+            echo "The schedule is armed or disarmed by hand, never by a push:"
+            echo '```'
+            echo "aws glue get-trigger --name gp_daily_start --query Trigger.State"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: What to point a Glue job at
         run: |
