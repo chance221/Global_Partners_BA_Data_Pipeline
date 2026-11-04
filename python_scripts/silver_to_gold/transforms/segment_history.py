@@ -1,17 +1,16 @@
 """Segmenting customers as they stood at an arbitrary past anchor.
 
 `customer_rfm` segments at one anchor -- the dataset's last order date -- and
-needs nothing else. Three tables need the same rules evaluated at a DIFFERENT
+needs nothing else. Two tables need the same rules evaluated at a DIFFERENT
 anchor, or at several:
 
-  loyalty_era_profile          two anchors, one per era
   customer_segment_transitions six anchors, a T0 and a T1 per era
   loyalty_cohort_outcomes      two anchors, T0 and T1
 
-This module is that shared implementation. It was `_rfm_features`, `_vip_cut`
-and `_segments` inside loyalty_era_profile; lifted here when the third and
-fourth consumers arrived, because a fourth copy of the segment CASE would have
-made drift inevitable.
+This module is that shared implementation. It began as `_rfm_features`,
+`_vip_cut` and `_segments` inside loyalty_era_profile -- a third consumer,
+since removed -- and was lifted here once copies of the segment CASE started
+to multiply, because drift between them would have been invisible.
 
 The thresholds still live in `customer_rfm` and are imported, not copied, so
 there is one definition of what a VIP is. The CASE expression here remains a
@@ -156,8 +155,8 @@ def frozen_vip_cut(orders: DataFrame, launch: date) -> Decimal:
     """The project-wide frozen VIP bar: the cut as it stood the day before launch.
 
     Every table that compares across time reads THIS value, so someone moving
-    between loyalty_era_profile, customer_segment_transitions and
-    loyalty_cohort_outcomes compares one definition of VIP rather than three.
+    between customer_segment_transitions and loyalty_cohort_outcomes compares
+    one definition of VIP rather than two.
     Each of them publishes it as `vip_spend_cut` so the agreement is auditable
     rather than asserted here.
 

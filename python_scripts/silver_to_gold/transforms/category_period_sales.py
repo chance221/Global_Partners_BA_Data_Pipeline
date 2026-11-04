@@ -33,8 +33,8 @@ SUMMER_MONTHS = (6, 7, 8)
 # dashboard -- gold is what gets queried.
 #
 # The cost is a deliberate reconciliation gap: 10 order lines and $35.57 of
-# $1,778,729.14 (0.002%) do not appear in this table or in
-# category_holiday_sales, so neither ties exactly to daily_restaurant_sales.
+# $1,778,729.14 (0.002%) do not appear in this table, so it does not tie
+# exactly to daily_restaurant_sales.
 # Textual corruption in this column is repaired upstream instead, by
 # silver_cleaners in config -- these two are judgements about scope, not
 # repairs, which is why they live here.
@@ -53,9 +53,11 @@ MATERIALITY_THRESHOLD_PCT = 1.0
 def category_materiality(daily: DataFrame) -> DataFrame:
     """Each category's share of ALL-TIME sales, and whether it clears the bar.
 
-    One row per category. Public because category_holiday_sales imports it:
-    the two tables must not disagree about what is material, for the same
-    reason they share NON_CATEGORIES.
+    One row per category. Module-level rather than nested because it was
+    shared with category_holiday_sales, which has since been removed; nothing
+    outside this module imports it now, so it can be made private whenever
+    that is worth a rename. NON_CATEGORIES is still genuinely shared --
+    sales_trend_grid imports it.
 
     The share is deliberately global rather than per period. Measured per
     period it flickers -- 15 categories cross 1% in some months and not

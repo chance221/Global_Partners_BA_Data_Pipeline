@@ -215,10 +215,11 @@ def test_dow_number_is_iso_with_monday_first(item_rows, build):
 def test_a_date_absent_from_the_calendar_keeps_its_revenue(item_rows, build):
     """The calendar join is LEFT, so a short date_dim loses flags, not money.
 
-    category_holiday_sales joins INNER for a good reason of its own. This
-    table trades the other way: its contract is that revenue sums to the
-    warehouse's, so a missing calendar row has to be visible as a NULL flag
-    rather than as quietly absent sales.
+    Its contract is that revenue sums to the warehouse's, so a missing
+    calendar row has to be visible as a NULL flag rather than as quietly
+    absent sales. The removed holiday table joined INNER for a reason of its
+    own -- it needed a day it could call ordinary -- which is the trade this
+    one cannot make.
     """
     out = build(item_rows(_line("o1", "2020-06-10T16:00:00")),
                 "2020-04-21").collect()

@@ -4,18 +4,18 @@ One row per (cohort, seg_t0). Customers are split by whether they held loyalty
 membership at T0, then followed to T1 and scored on where they ended up. Both
 cohorts are observed over one identical window, which is the whole point:
 
-  loyalty_era_profile      splits on CALENDAR -- before the program against
-                           after it -- so it cannot separate the program from
-                           the January-2023 reprice or the chain's growth.
   loyalty_order_profile    splits WITHIN a customer, before and after their own
                            enrolment, which holds the customer fixed but not
                            the calendar.
   this table               splits on MEMBERSHIP inside one shared window, which
                            holds the calendar fixed but not the customer.
 
-Three different confounds, so the three tables are read together. None of them
-is a randomised trial and this one is not either -- see the self-selection
-warning below.
+Two different confounds, so the two tables are read together. A third,
+loyalty_era_profile, split on CALENDAR -- before the program against after it
+-- and so could separate the program from neither the January-2023 reprice nor
+the chain's growth; it was removed rather than caveated. Neither table that
+remains is a randomised trial and this one is not either -- see the
+self-selection warning below.
 
 MEMBERSHIP IS TAKEN AS OF T0, NOT FROM ALL HISTORY
 --------------------------------------------------
@@ -49,11 +49,10 @@ bounds the effect; it does not identify it. Saying so is the point of the
 docstring.
 
 The VIP bar is `segment_history.frozen_vip_cut` -- the day before launch, the
-same dollar value loyalty_era_profile and customer_segment_transitions read --
-so one bar classifies both ends of the window and all three tables agree on
-what a VIP is. Full rebuild, no
-event_time_column -- a slice of one batch cannot say who was a member 180 days
-before it. Twenty rows, so unpartitioned.
+same dollar value customer_segment_transitions reads -- so one bar classifies
+both ends of the window and both tables agree on what a VIP is. Full rebuild,
+no event_time_column -- a slice of one batch cannot say who was a member 180
+days before it. Twenty rows, so unpartitioned.
 """
 
 from __future__ import annotations
@@ -84,8 +83,8 @@ ALL_CUSTOMERS = "All customers"
 def _with_rollup(paired: DataFrame) -> DataFrame:
     """Repeat every customer once more under the `All customers` label.
 
-    The same relabel-and-union trick loyalty_era_profile uses, so one groupBy
-    produces both the per-segment rows and the pooled ones.
+    A relabel and a union, so one groupBy produces both the per-segment rows
+    and the pooled ones.
     """
     return paired.unionByName(
         paired.withColumn("seg_t0", F.lit(ALL_CUSTOMERS)))

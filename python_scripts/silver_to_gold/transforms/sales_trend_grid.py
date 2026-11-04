@@ -198,10 +198,12 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
 
     return (
         grid
-        # LEFT, where category_holiday_sales joins the calendar INNER. The
-        # trade is deliberate and runs the other way here: that table needs a
-        # day it can call ordinary, while this one's contract is that its
-        # revenue sums to the warehouse's. An inner join would drop real sales
+        # LEFT, deliberately. This table's contract is that its revenue sums
+        # to the warehouse's, which an INNER join cannot keep: it would
+        # silently drop a day the calendar does not cover. The holiday table
+        # that once joined INNER here needed a day it could call ordinary and
+        # accepted that trade; this one cannot. An inner join would drop real
+        # sales
         # on a date the calendar happens not to cover. A short calendar shows
         # up here as NULL flags, which is visible, rather than as missing
         # money, which is not.

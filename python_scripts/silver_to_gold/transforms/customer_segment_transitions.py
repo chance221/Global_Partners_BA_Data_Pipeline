@@ -37,9 +37,10 @@ matters enough that T0 and T1 are published per row: a reader can see which
 anchors produced a number instead of trusting that they were the intended ones.
 
 Pre-launch against Recent is the before-and-after the program. It is still
-descriptive, not causal -- see loyalty_era_profile's docstring for what a
-calendar split cannot separate -- and `loyalty_cohort_outcomes` is the
-within-window comparison that holds calendar time fixed.
+descriptive, not causal: a calendar split cannot separate the program from the
+January-2023 reprice or from the chain's own growth, both of which sit inside
+the comparison. `loyalty_cohort_outcomes` is the within-window comparison that
+holds calendar time fixed instead.
 
 TWO STRUCTURAL ZEROS, WHICH ARE NOT FINDINGS
 --------------------------------------------
@@ -57,8 +58,8 @@ group list and the percentages visibly sum to 100.
 THE VIP BAR IS FROZEN
 ---------------------
 At the day before launch -- `segment_history.frozen_vip_cut`, the same dollar
-value `loyalty_era_profile` and `loyalty_cohort_outcomes` read, so all three
-tables classify VIP identically. `customer_rfm` floats it, correctly, for a
+value `loyalty_cohort_outcomes` reads, so both tables classify VIP
+identically. `customer_rfm` floats it, correctly, for a
 snapshot; floating it here would pin VIP near a fixed share of each era's base
 and make the comparison measure nothing. Published as `vip_spend_cut` for audit.
 
@@ -131,8 +132,8 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
     span = timedelta(days=TRANSITION_DAYS)
 
     # One dollar bar classifies all three eras, and it is the same bar
-    # loyalty_era_profile and loyalty_cohort_outcomes read. See the module
-    # docstring for why it is frozen at all.
+    # loyalty_cohort_outcomes reads. See the module docstring for why it is
+    # frozen at all.
     cut = frozen_vip_cut(orders, launch)
 
     eras = [

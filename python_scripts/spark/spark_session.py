@@ -38,7 +38,8 @@ _ICEBERG_AWS_BUNDLE = "org.apache.iceberg:iceberg-aws-bundle:1.11.0"
 # zone locally -- so identical silver produced different gold depending on
 # where the job ran. It was not hypothetical: the last order in silver is
 # 2024-02-21 02:52 UTC, which is 2024-02-20 21:52 in America/New_York, so
-# loyalty_era_profile derived a 331-day era locally and a 332-day era on Glue
+# the since-removed loyalty_era_profile derived a 331-day era locally and
+# a 332-day era on Glue
 # from the same rows.
 #
 # Pinned so a local run reproduces Glue exactly, and pinned to UTC because the

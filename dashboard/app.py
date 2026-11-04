@@ -1542,13 +1542,11 @@ with tab_program:
         f"+{worst.delta.min():.1f} to +{worst.delta.max():.1f} percentage "
         "points. The biggest effect is on New customers: 23.4% of members were "
         "still active against 10.9% of non-members -- enrollment roughly "
-        "doubles New retention. Set against the era-level finding that "
-        "New-segment REVENUE fell 48.7% between the two spans "
-        "($17,013 to $8,734), the implication is specific: the program works "
-        "on the new customers it reaches, and the problem is reach and "
-        "acquisition rather than program design. It is still not causal, "
-        "though -- read the caveat under it, then section 3 for why "
-        "none of it has moved the totals.",
+        "doubles New retention. That points at reach rather than design: the "
+        "program works on the new customers it reaches, so the question is "
+        "how many it reaches. It is still not causal, though -- read the "
+        "caveat under it, then section 3 for why none of it has moved the "
+        "totals.",
         icon=":material/insights:")
 
     st.error(

@@ -146,7 +146,11 @@ def test_grain_is_never_null(spark, cfg, batch_date, item_rows, build_inputs,
 
 # A category's share is of ALL-TIME sales, so these build a batch whose
 # category split is known and check the arithmetic rather than a magic number.
-MATERIALITY_TABLES = ["category_period_sales", "category_holiday_sales"]
+# Only one table publishes a materiality share now that
+# category_holiday_sales is gone, but the list stays a list: the share
+# is computed by a shared helper, so the next table to import it gets
+# this check by adding one name.
+MATERIALITY_TABLES = ["category_period_sales"]
 
 
 @pytest.fixture

@@ -25,9 +25,9 @@ def test_session_timezone_is_pinned(spark):
 def test_to_date_resolves_a_late_utc_timestamp_to_its_utc_day(spark):
     """The regression. Six gold tables derive their date grain this way.
 
-    Under America/New_York this returns 2024-02-20, which made
-    loyalty_era_profile compute a 331-day era locally and 332 on Glue from
-    identical silver.
+    Under America/New_York this returns 2024-02-20, which made the
+    since-removed loyalty_era_profile compute a 331-day era locally and 332 on
+    Glue from identical silver.
     """
     df = spark.sql(f"SELECT CAST('{BOUNDARY_UTC}' AS timestamp) AS ts")
     got = df.select(F.to_date("ts").alias("d")).collect()[0]["d"]

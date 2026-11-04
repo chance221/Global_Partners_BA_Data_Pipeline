@@ -21,8 +21,9 @@ around each customer's OWN join date rather than around a calendar date:
 Two consequences, each of them the point:
 
   * Exposure is equal by construction, so the measure cannot be inflated by
-    observing members for longer. That is the trap `loyalty_era_profile`
-    documents at the era level and it applies with more force here.
+    observing members for longer. Unequal exposure is exactly what sank the
+    era-level view of this question: a flag-based split hands the member side
+    months against the non-member side's years.
   * It is WITHIN-PERSON. The same customers appear on both sides, so none of
     this is the difference between people who join and people who do not.
 
@@ -317,9 +318,9 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
 
     # The coverage test asks whether the DATA spans N days either side of a
     # join date, not whether the customer was active in that span: a customer
-    # who simply did not order is a real zero. Collected once, like the span
-    # in category_holiday_sales, because the bound is a scalar and pushing it
-    # through as a column would cross-join every row against it.
+    # who simply did not order is a real zero. Collected once rather than
+    # carried as a column, because the bound is a scalar and pushing it
+    # through would cross-join every row against it.
     span = orders.agg(F.min("order_date"), F.max("order_date")).collect()[0]
     data_start, data_end = span[0], span[1]
     if data_start is None:

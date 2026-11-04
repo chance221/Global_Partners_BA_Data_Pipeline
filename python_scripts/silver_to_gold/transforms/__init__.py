@@ -21,26 +21,21 @@ from datetime import datetime
 from pyspark.sql import DataFrame
 
 from python_scripts.silver_to_gold.transforms import (
-    category_holiday_sales, category_period_sales, clv_tier_profile,
-    clv_tier_segments, customer_lifetime_value, customer_rfm,
-    customer_segment_transitions, daily_restaurant_sales,
-    loyalty_cohort_outcomes, loyalty_era_profile, loyalty_join_profile,
-    loyalty_order_profile,
-    restaurant_revenue_rank, sales_trend_grid,
+    category_period_sales, clv_tier_profile, clv_tier_segments,
+    customer_lifetime_value, customer_rfm, customer_segment_transitions,
+    daily_restaurant_sales, loyalty_cohort_outcomes, loyalty_join_profile,
+    loyalty_order_profile, sales_trend_grid,
 )
 
 Transform = Callable[[dict[str, DataFrame], datetime], DataFrame]
 
 TRANSFORMS: dict[str, Transform] = {
     "daily_restaurant_sales": daily_restaurant_sales.build,
-    "restaurant_revenue_rank": restaurant_revenue_rank.build,
     "customer_lifetime_value": customer_lifetime_value.build,
     "customer_rfm": customer_rfm.build,
     "category_period_sales": category_period_sales.build,
-    "category_holiday_sales": category_holiday_sales.build,
     "loyalty_order_profile": loyalty_order_profile.build,
     "loyalty_join_profile": loyalty_join_profile.build,
-    "loyalty_era_profile": loyalty_era_profile.build,
     "customer_segment_transitions": customer_segment_transitions.build,
     "loyalty_cohort_outcomes": loyalty_cohort_outcomes.build,
     "clv_tier_profile": clv_tier_profile.build,

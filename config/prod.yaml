@@ -135,17 +135,6 @@ gold:
       avg_order_total: decimal(10,2)
       week_start: date
 
-  # No event_time_column on purpose: a rank over all history cannot be built
-  # from an incremental slice, so every run rebuilds this table in full.
-  restaurant_revenue_rank:
-    depends_on: [order_items]
-    grain_keys: [restaurant_id]
-    write: replace
-    output_columns:
-      restaurant_id: string
-      total_revenue: decimal(18,2)
-      revenue_rank: int
-
 
   # Full rebuild every run, which is cheap at one row per customer
   # With the current volume.
@@ -210,28 +199,6 @@ gold:
       pct_of_total_sales: decimal(7,4)
       is_material: boolean
 
-  # Per holiday per category, with an ordinary-day baseline alongside so lift
-  # is a division the consumer does. Joins date_dim INNER on purpose: a day
-  # with no calendar row cannot be called ordinary without folding real
-  # holidays into the baseline.
-  category_holiday_sales:
-    depends_on: [order_items, date_dim]
-    grain_keys: [holiday_name, item_category]
-    write: replace
-    output_columns:
-      holiday_name: string
-      item_category: string
-      holiday_days: int
-      ordinary_days: int
-      total_orders: bigint
-      total_order_items: bigint
-      total_sales: decimal(18,2)
-      avg_sales_per_order: decimal(18,2)
-      avg_order_items: decimal(10,2)
-      avg_revenue_per_day: decimal(18,2)
-      ordinary_avg_revenue_per_day: decimal(18,2)
-      pct_of_total_sales: decimal(7,4)
-      is_material: boolean
 
   # Order profile by loyalty membership state, five rows that DELIBERATELY
   # OVERLAP: a switcher's flagged order is counted in three of them. They are
@@ -356,50 +323,6 @@ gold:
       avg_order_value: decimal(10,2)
       median_order_value: decimal(10,2)
 
-  loyalty_era_profile:
-    depends_on: [order_items]
-    grain_keys: [era, segment]
-    write: replace
-    output_columns:
-      era: string
-      segment: string
-      segment_group: string
-      # Published so a reader can verify the windows are equal rather than
-      # trust the comment. window_days is the era; segment_window_days is the
-      # trailing window the RFM segment is assigned from, which stays at 90
-      # because a segment is a claim about recent activity.
-      window_start: date
-      window_end: date
-      window_days: int
-      segment_window_days: int
-      customers: bigint
-      orders: bigint
-      total_revenue: decimal(18,2)
-      avg_order_value: decimal(10,2)
-      # Mean and median side by side throughout, because here they disagree
-      # and point opposite ways: median orders per customer doubles, 1 to 2,
-      # while the mean falls. The pre era carries a large mass of one-order
-      # COVID-era customers.
-      median_order_value: decimal(10,2)
-      avg_orders_per_customer: decimal(10,2)
-      median_orders_per_customer: decimal(10,2)
-      avg_spend_per_customer: decimal(10,2)
-      median_spend_per_customer: decimal(10,2)
-      # Average order value held flat across the eras (13.51 to 13.68) because
-      # these two moved in opposite directions and cancelled: baskets shrank
-      # while the menu reprice lifted the price of what was in them. Carrying
-      # both is what stops "AOV is flat" being read as "nothing happened".
-      units_per_order: decimal(10,2)
-      revenue_per_unit: decimal(10,2)
-      # Within-era shares, so the Core segments can be shown carrying a
-      # disproportionate slice of revenue without the reader doing arithmetic.
-      revenue_share_pct: decimal(5,2)
-      customer_share_pct: decimal(5,2)
-      # The frozen VIP bar, in dollars, identical in both eras. A floating
-      # percentile -- what customer_rfm uses, correctly, for a snapshot --
-      # would pin VIP at a fixed share of the base and make growth
-      # unmeasurable by construction.
-      vip_spend_cut: decimal(18,2)
 
   # Where each segment's customers ended up 180 days later, as a share of each
   # origin row -- so row_pct sums to 100 across every (era, seg_t0).
@@ -428,13 +351,13 @@ gold:
       row_pct: decimal(5,2)
       vip_spend_cut: decimal(18,2)
 
-  # Members against non-members over the SAME 180 days. This is what
-  # loyalty_era_profile cannot do: that table splits on calendar, so the
-  # chain's growth and the January-2023 reprice sit inside the comparison.
-  # Three tables, three confounds, read together --
-  #   loyalty_era_profile    calendar split, customer mix floats
+  # Members against non-members over the SAME 180 days, which is the point:
+  # holding the calendar fixed keeps the chain's growth and the January-2023
+  # reprice out of the comparison. Two tables, two confounds, read together --
   #   loyalty_order_profile  within-customer split, calendar floats
   #   this table             membership split, calendar fixed, mix floats
+  # A third, loyalty_era_profile, split on calendar instead and carried both
+  # confounds at once; it was removed rather than caveated.
   #
   
   loyalty_cohort_outcomes:

@@ -283,16 +283,6 @@ def weekly(spark: SparkSession, config: AppConfig,
     ).toPandas()
 
 
-def leaderboard(spark: SparkSession, config: AppConfig,
-                table: str = "restaurant_revenue_rank") -> pd.DataFrame:
-    """Restaurants by lifetime revenue, best first."""
-    return spark.sql(
-        "SELECT revenue_rank, restaurant_id, total_revenue, total_orders, "
-        "line_items, units, avg_order_total "
-        f"FROM {fqn(config, 'gold', table)} ORDER BY revenue_rank"
-    ).toPandas()
-
-
 # --- gold, across every table ---------------------------------------------
 
 def gold_overview(spark: SparkSession, config: AppConfig) -> pd.DataFrame:
@@ -1095,51 +1085,14 @@ def category_grains(spark: SparkSession, config: AppConfig) -> pd.DataFrame:
     ).toPandas()
 
 
-def holiday_lift(spark: SparkSession, config: AppConfig,
-                 category: str | None = None) -> pd.DataFrame:
-    """Holiday trading against the ordinary-day baseline, worst lift first.
-
-    `total_sales` is NOT comparable between holidays. Pooling the Observed
-    day means holiday_days varies -- 4 for most, 5 for Christmas, New Year's
-    Day and Independence Day -- so a holiday with an extra day looks bigger
-    for that reason alone. `avg_revenue_per_day` is the comparable figure and
-    `lift_pct` against the ordinary baseline is what the table exists to show.
-
-    TRY_DIVIDE rather than `/` because ANSI mode is on in Spark 4: a zero
-    baseline would end the run instead of yielding null.
-
-    Summed across categories by default; pass `category` for a single one.
-    """
-    where = ""
-    if category:
-        safe = category.replace("'", "''")   # "Kid's" is a real category
-        where = f"WHERE item_category = '{safe}' "
-
-    return spark.sql(
-        "SELECT holiday_name, MAX(holiday_days) AS holiday_days, "
-        "COUNT(*) AS categories, SUM(total_orders) AS orders, "
-        "SUM(total_sales) AS total_sales, "
-        "CAST(SUM(avg_revenue_per_day) AS decimal(18,2)) "
-        "    AS holiday_rev_per_day, "
-        "CAST(SUM(ordinary_avg_revenue_per_day) AS decimal(18,2)) "
-        "    AS ordinary_rev_per_day, "
-        "CAST(100.0 * TRY_DIVIDE("
-        "       SUM(avg_revenue_per_day) - SUM(ordinary_avg_revenue_per_day), "
-        "       SUM(ordinary_avg_revenue_per_day)) AS decimal(10,1)) "
-        "    AS lift_pct "
-        f"FROM {fqn(config, 'gold', 'category_holiday_sales')} {where}"
-        "GROUP BY holiday_name ORDER BY lift_pct"
-    ).toPandas()
-
-
 def dirty_categories(spark: SparkSession, config: AppConfig) -> pd.DataFrame:
     """item_category values that arrived corrupted from the source.
 
     Three values in this dataset have a scraped admin URL concatenated into
     them, and one has it spliced into the MIDDLE of the name
     ("Drip C<url>offee"). That matters beyond being ugly: it SPLITS a real
-    category in two, so the clean row's totals are understated and both
-    category gold tables carry the fragment as a separate row.
+    category in two, so the clean row's totals are understated and
+    category_period_sales carries the fragment as a separate row.
 
     Empty means the source was cleaned. Until then, it is the caveat that
     belongs beside any category ranking.

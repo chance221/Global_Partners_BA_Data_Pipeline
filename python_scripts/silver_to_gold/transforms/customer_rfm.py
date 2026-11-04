@@ -21,8 +21,12 @@ from datetime import datetime, timedelta
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 
-ACTIVE_WINDOW_DAYS = 90  #This is shared with loyalty era profile so if you change this you change the active lookback window for that gold table as well.
-PERIOD_DAYS = 30 # This is shared with loyalty era profile so if you change this you change the active lookback window for that gold table as well.
+# Imported by segment_history, so changing either of these changes the
+# lookback for every table that segments at a past anchor --
+# customer_segment_transitions and loyalty_cohort_outcomes -- not just this
+# one. (loyalty_era_profile read them too until it was removed 2026-11-04.)
+ACTIVE_WINDOW_DAYS = 90
+PERIOD_DAYS = 30
 
 # Measured thresholds. 
 NEW_MAX_TENURE_DAYS = 30        # first order this recent == no history yet
@@ -142,13 +146,20 @@ def build(inputs: dict[str, DataFrame], batch_date: datetime) -> DataFrame:
                      # these reach Core against 3.5% of Lapsing.
                      .when(F.col("total_orders") == 1, "Never Returned")
                      .otherwise("Lapsing"))
+        # Every rate below is from the `Recent` era of
+        # customer_segment_transitions (t0 2023-08-25, t1 2024-02-21). Named
+        # because they are not stable across eras -- Slipping's Core
+        # progression runs 7.0% / 13.7% / 8.8% over the three -- so a figure
+        # quoted without its anchor goes stale silently, which is what
+        # happened to the two in this comment before 2026-11-04.
+        #
         # Re-engaging groups with Lapsing rather than under Developing. Over
         # 180 days it reaches Core 2.3% of the time against Lapsing's 3.5% and
         # goes Dormant more often (77.4% vs 71.9%), so a 180-day gap cleared
         # once is infrequency, not a trajectory. Slipping is alone in Churn
         # Risk because it is the only segment worth intervening on: the highest
-        # Core progression of any non-Core segment, 9.3%, and the lowest
-        # Dormant rate, 57.1%.
+        # Core progression of any non-Core segment, 8.8%, and the lowest
+        # Dormant rate, 57.2%.
         .withColumn("segment_group",
                     F.when(F.col("segment").isin("VIP", "Loyal"), "Core")
                      .when(F.col("segment") == "New", "New Growth")
